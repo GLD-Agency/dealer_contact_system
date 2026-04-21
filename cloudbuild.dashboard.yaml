@@ -1,0 +1,12 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - Dockerfile.dashboard
+      - -t
+      - us-central1-docker.pkg.dev/dealer-contacts-project/dealer-contact-system/dealer-contact-dashboard:latest
+      - .
+
+images:
+  - us-central1-docker.pkg.dev/dealer-contacts-project/dealer-contact-system/dealer-contact-dashboard:latest

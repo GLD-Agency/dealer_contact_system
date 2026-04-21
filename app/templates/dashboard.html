@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Dealer Contact System Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+  </head>
+  <body>
+    <main class="page-shell">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Dealer Contact System</p>
+          <h1>Pipeline Status Dashboard</h1>
+          <p class="subhead">
+            BigQuery-backed health view for dealer validation, enrichment, extraction,
+            browser retries, and worker queue throughput.
+          </p>
+        </div>
+        <div class="hero-meta">
+          <div class="meta-card">
+            <span class="meta-label">Environment</span>
+            <strong>{{ data.environment }}</strong>
+          </div>
+          <div class="meta-card">
+            <span class="meta-label">Project</span>
+            <strong>{{ data.project_id }}</strong>
+          </div>
+          <div class="meta-card">
+            <span class="meta-label">Generated</span>
+            <strong>{{ data.generated_at }}</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="card-grid metrics-grid">
+        <article class="card stat-card">
+          <span class="stat-label">Validated Dealers</span>
+          <strong class="stat-value">{{ "{:,}".format(data.overview.validated_dealers or 0) }}</strong>
+        </article>
+        <article class="card stat-card">
+          <span class="stat-label">Dealer Groups</span>
+          <strong class="stat-value">{{ "{:,}".format(data.overview.validated_dealer_groups or 0) }}</strong>
+        </article>
+        <article class="card stat-card">
+          <span class="stat-label">Website-Ready Dealers</span>
+          <strong class="stat-value">{{ "{:,}".format(data.overview.validated_websites or 0) }}</strong>
+        </article>
+        <article class="card stat-card">
+          <span class="stat-label">Website Contacts</span>
+          <strong class="stat-value">{{ "{:,}".format(data.overview.website_extracted_contacts or 0) }}</strong>
+        </article>
+        <article class="card stat-card">
+          <span class="stat-label">Queued Validate</span>
+          <strong class="stat-value">{{ "{:,}".format(data.overview.queued_validate or 0) }}</strong>
+        </article>
+        <article class="card stat-card">
+          <span class="stat-label">Blocked Fetches</span>
+          <strong class="stat-value">{{ "{:,}".format(data.overview.blocked_fetch_accounts or 0) }}</strong>
+        </article>
+      </section>
+
+      <section class="card">
+        <div class="section-head">
+          <h2>Change Since Last Snapshot</h2>
+          <p>
+            {% if data.snapshot_summary.available %}
+              Latest snapshot: {{ data.snapshot_summary.latest_snapshot_at or "now" }}
+              {% if data.snapshot_summary.previous_snapshot_at %}
+                compared with {{ data.snapshot_summary.previous_snapshot_at }}
+              {% endif %}
+            {% else %}
+              No historical snapshots yet. The next queue cycle will start building this trend view.
+            {% endif %}
+          </p>
+        </div>
+        <div class="card-grid delta-grid">
+          {% for row in data.snapshot_summary.cards %}
+          <article class="delta-card">
+            <span class="stat-label">{{ row.label }}</span>
+            <strong class="delta-value">{{ "{:,}".format(row.value or 0) }}</strong>
+            <span class="delta-pill delta-{{ row.direction }}">
+              {% if row.delta > 0 %}+{% endif %}{{ "{:,}".format(row.delta or 0) }}
+            </span>
+          </article>
+          {% endfor %}
+        </div>
+      </section>
+
+      <section class="card-grid two-column">
+        <article class="card">
+          <div class="section-head">
+            <h2>Connections</h2>
+            <p>High-level health for data and runtime dependencies.</p>
+          </div>
+          <div class="connection-list">
+            {% for item in data.connections %}
+            <div class="connection-row">
+              <div>
+                <strong>{{ item.name }}</strong>
+                <p>{{ item.detail }}</p>
+              </div>
+              <span class="pill pill-{{ item.status }}">{{ item.status }}</span>
+            </div>
+            {% endfor %}
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="section-head">
+            <h2>Platform Connections</h2>
+            <p>Downstream sync readiness for marketing and audience systems.</p>
+          </div>
+          <div class="connection-list">
+            {% for item in data.integration_connections %}
+            <div class="connection-row">
+              <div>
+                <strong>{{ item.name }}</strong>
+                <p>{{ item.detail }}</p>
+              </div>
+              <span class="pill pill-{{ item.status }}">{{ item.status }}</span>
+            </div>
+            {% endfor %}
+          </div>
+        </article>
+      </section>
+
+      <section class="card-grid two-column">
+        <article class="card">
+          <div class="section-head">
+            <h2>Queue Throughput</h2>
+            <p>Backlog and completion by worker type.</p>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Task</th>
+                <th>Queued</th>
+                <th>In Progress</th>
+                <th>Completed</th>
+                <th>Failed</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in data.queue_rows %}
+              <tr>
+                <td>{{ row.task_type }}</td>
+                <td>{{ "{:,}".format(row.queued_count or 0) }}</td>
+                <td>{{ "{:,}".format(row.in_progress_count or 0) }}</td>
+                <td>{{ "{:,}".format(row.completed_count or 0) }}</td>
+                <td>{{ "{:,}".format(row.failed_count or 0) }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </article>
+        <article class="card">
+          <div class="section-head">
+            <h2>System Totals</h2>
+            <p>Core pipeline volume and readiness counts.</p>
+          </div>
+          <div class="list-stack">
+            <div class="metric-row">
+              <span>Source Contacts</span>
+              <strong>{{ "{:,}".format(data.overview.source_contacts or 0) }}</strong>
+            </div>
+            <div class="metric-row">
+              <span>Dealer Accounts</span>
+              <strong>{{ "{:,}".format(data.overview.dealer_accounts or 0) }}</strong>
+            </div>
+            <div class="metric-row">
+              <span>Prospect Contacts</span>
+              <strong>{{ "{:,}".format(data.overview.prospect_contacts or 0) }}</strong>
+            </div>
+            <div class="metric-row">
+              <span>Pipeline Runs Logged</span>
+              <strong>{{ "{:,}".format(data.overview.pipeline_runs or 0) }}</strong>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="card-grid three-column">
+        <article class="card">
+          <div class="section-head">
+            <h2>Classification Mix</h2>
+            <p>Dealer account type distribution.</p>
+          </div>
+          <div class="list-stack">
+            {% for row in data.classification_counts %}
+            <div class="metric-row">
+              <span>{{ row.label }}</span>
+              <strong>{{ "{:,}".format(row.total_accounts or 0) }}</strong>
+            </div>
+            {% endfor %}
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="section-head">
+            <h2>Top Brands</h2>
+            <p>Largest validated dealer counts by inferred brand.</p>
+          </div>
+          <div class="list-stack">
+            {% for row in data.brand_counts %}
+            <div class="metric-row">
+              <span>{{ row.label }}</span>
+              <strong>{{ "{:,}".format(row.total_accounts or 0) }}</strong>
+            </div>
+            {% endfor %}
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="section-head">
+            <h2>Role Families</h2>
+            <p>Leadership contacts extracted from dealer websites.</p>
+          </div>
+          <div class="list-stack">
+            {% for row in data.role_family_counts %}
+            <div class="metric-row">
+              <span>{{ row.label }}</span>
+              <strong>{{ "{:,}".format(row.total_contacts or 0) }}</strong>
+            </div>
+            {% endfor %}
+          </div>
+        </article>
+      </section>
+
+      <section class="card-grid two-column">
+        <article class="card">
+          <div class="section-head">
+            <h2>Fetch Outcomes</h2>
+            <p>Dealer website access results across the validated pool.</p>
+          </div>
+          <div class="list-stack">
+            {% for row in data.fetch_status_counts %}
+            <div class="metric-row">
+              <span>{{ row.label }}</span>
+              <strong>{{ "{:,}".format(row.total_accounts or 0) }}</strong>
+            </div>
+            {% endfor %}
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="section-head">
+            <h2>Recent Pipeline Runs</h2>
+            <p>Latest queue worker activity logged in BigQuery.</p>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Task</th>
+                <th>Status</th>
+                <th>Claimed</th>
+                <th>Succeeded</th>
+                <th>Failed</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in data.recent_runs %}
+              <tr>
+                <td>{{ row.task_type }}</td>
+                <td><span class="pill pill-{{ 'healthy' if row.run_status == 'completed' else 'warning' if row.run_status == 'running' else 'error' }}">{{ row.run_status }}</span></td>
+                <td>{{ "{:,}".format(row.claimed_count or 0) }}</td>
+                <td>{{ "{:,}".format(row.succeeded_count or 0) }}</td>
+                <td>{{ "{:,}".format(row.failed_count or 0) }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </article>
+      </section>
+
+      <section class="card">
+        <div class="section-head">
+          <h2>Recent Trend Snapshots</h2>
+          <p>Point-in-time metrics captured after queue cycles so you can spot before/after movement.</p>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Snapshot</th>
+              <th>Validated Dealers</th>
+              <th>Dealer Groups</th>
+              <th>Website-Ready</th>
+              <th>Resolved Websites</th>
+              <th>Website Contacts</th>
+              <th>Blocked Sites</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in data.trend_rows %}
+            <tr>
+              <td>{{ row.snapshot_at }}</td>
+              <td>{{ "{:,}".format(row.validated_dealers or 0) }}</td>
+              <td>{{ "{:,}".format(row.validated_dealer_groups or 0) }}</td>
+              <td>{{ "{:,}".format(row.validated_websites or 0) }}</td>
+              <td>{{ "{:,}".format(row.enriched_websites or 0) }}</td>
+              <td>{{ "{:,}".format(row.website_extracted_contacts or 0) }}</td>
+              <td>{{ "{:,}".format(row.blocked_fetch_accounts or 0) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+
+      <section class="card">
+        <div class="section-head">
+          <h2>Blocked Dealer Sites</h2>
+          <p>Operational review list for the browser-backed retry lane.</p>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Account Key</th>
+              <th>Brand</th>
+              <th>Website</th>
+              <th>Blocked Reason</th>
+              <th>Attempts</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in data.blocked_accounts %}
+            <tr>
+              <td>{{ row.account_key }}</td>
+              <td>{{ row.inferred_brand or "-" }}</td>
+              <td>
+                {% if row.website_url %}
+                <a href="{{ row.website_url }}" target="_blank" rel="noreferrer">{{ row.website_url }}</a>
+                {% else %}
+                -
+                {% endif %}
+              </td>
+              <td>{{ row.blocked_reason or "-" }}</td>
+              <td>{{ "{:,}".format(row.blocked_attempt_count or 0) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+    </main>
+  </body>
+</html>

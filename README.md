@@ -15,6 +15,8 @@ Phase 2 foundation for a dealer contact pipeline that uses BigQuery as the sourc
 - A browser-backed retry lane for blocked dealer websites
 - A BigQuery-backed account work queue for queue-driven workers
 - A pipeline run log for resumable worker execution and future scheduling
+- A one-page dashboard UI for status, health, brand mix, queue status, and recent runs
+- Automatic dashboard snapshots so the UI can show before/after deltas and trend history
 - CLI commands for setup, normalize, and report
 - Helper scripts for connection checks and operational entry points
 
@@ -53,10 +55,16 @@ dealer_contact_system/
     browser_fetcher.py
     cli.py
     config.py
+    dashboard_service.py
+    dashboard_web.py
     fetch_tracker.py
     logging_utils.py
     schema_manager.py
     web_fetcher.py
+    static/
+      dashboard.css
+    templates/
+      dashboard.html
     services/
       account_enrichment.py
       browser_retry.py
@@ -66,6 +74,7 @@ dealer_contact_system/
       normalization.py
       work_queue.py
   scripts/
+    deploy_dashboard_service.ps1
     test_bigquery_connection.py
     check_contact_count.py
     check_domain_count.py
@@ -120,6 +129,7 @@ gcloud auth application-default login
 - `SYNC_TARGETS_TABLE`: Placeholder downstream sync table
 - `ACCOUNT_WORK_QUEUE_TABLE`: BigQuery work queue table for brute-force workers
 - `PIPELINE_RUNS_TABLE`: BigQuery run log for worker execution
+- `DASHBOARD_SNAPSHOTS_TABLE`: BigQuery snapshot table for dashboard trend history
 - `WORKER_BATCH_SIZE`: Default account batch size for queue-driven workers
 - `WORKER_LEASE_MINUTES`: How long a worker lease remains valid before another worker can retry it
 - `VALIDATE_WORKER_BATCH_SIZE`: Batch size for one queue-cycle validation step
@@ -128,6 +138,9 @@ gcloud auth application-default login
 - `RETRY_BLOCKED_WORKER_BATCH_SIZE`: Batch size for one queue-cycle blocked-site retry step
 - `CLOUD_RUN_REGION`: Target region for Cloud Run jobs
 - `BROWSER_TIMEOUT_SECONDS`: Timeout for browser-backed blocked-site retries
+- `BLOCKED_RETRY_SHORT_COOLDOWN_HOURS`: Cooldown after the first blocked-site attempts
+- `BLOCKED_RETRY_MEDIUM_COOLDOWN_HOURS`: Cooldown after repeated blocked-site attempts
+- `BLOCKED_RETRY_LONG_COOLDOWN_HOURS`: Cooldown after persistent blocked-site attempts
 - `GOOGLE_APPLICATION_CREDENTIALS`: Optional service account key path
 
 Defaults target:
@@ -161,7 +174,9 @@ python -m app run-worker --task-type extract_contacts --batch-size 25
 python -m app run-worker --task-type retry_blocked --batch-size 10
 python -m app run-queue-cycle --seed --dry-run
 python -m app run-queue-cycle --seed
+python -m app capture-dashboard-snapshot
 python -m app report
+python -m app serve-dashboard
 ```
 
 Or use `main.py`:
@@ -187,7 +202,9 @@ python main.py run-worker --task-type extract_contacts --batch-size 25
 python main.py run-worker --task-type retry_blocked --batch-size 10
 python main.py run-queue-cycle --seed --dry-run
 python main.py run-queue-cycle --seed
+python main.py capture-dashboard-snapshot
 python main.py report
+python main.py serve-dashboard
 ```
 
 ## Helper Scripts
@@ -268,6 +285,24 @@ Print a read-only pipeline report:
 
 ```bash
 python scripts/report_pipeline_status.py
+```
+
+Run the one-page dashboard locally:
+
+```bash
+python scripts/run_dashboard.py
+```
+
+On Windows PowerShell, the safest option is:
+
+```powershell
+.\scripts\start_dashboard.ps1
+```
+
+If you prefer running it directly, use the project virtual environment Python:
+
+```powershell
+.\.venv\Scripts\python.exe main.py serve-dashboard
 ```
 
 ## Queue-Driven Workers
@@ -361,6 +396,38 @@ Included deployment helpers:
 
 - [scripts/deploy_cloud_run_job.ps1](/C:/Users/brent/OneDrive/Desktop/dealer_contact_system/scripts/deploy_cloud_run_job.ps1)
 - [scripts/deploy_cloud_scheduler_job.ps1](/C:/Users/brent/OneDrive/Desktop/dealer_contact_system/scripts/deploy_cloud_scheduler_job.ps1)
+- [scripts/deploy_dashboard_service.ps1](/C:/Users/brent/OneDrive/Desktop/dealer_contact_system/scripts/deploy_dashboard_service.ps1)
+
+## Dashboard UI
+
+The project now includes a simple one-page dashboard with:
+
+- top-line pipeline counts
+- dealer classification mix
+- top validated brands
+- queue backlog by worker type
+- recent worker run history
+- blocked dealer-site review list
+- high-level connection and system status
+- integration status for Campaign Monitor, Meta, and Google Ads
+
+Run it locally:
+
+```bash
+python main.py serve-dashboard
+```
+
+Then open:
+
+```text
+http://localhost:8080
+```
+
+Deploy it to Cloud Run as a service:
+
+```powershell
+.\scripts\deploy_dashboard_service.ps1 -ServiceAccountEmail YOUR_SERVICE_ACCOUNT@dealer-contacts-project.iam.gserviceaccount.com
+```
 
 ## GitHub Migration
 
@@ -439,6 +506,7 @@ The contact extraction pipeline writes website-derived leadership contacts for v
 - When a validated dealer site blocks page reads, the system still keeps the resolved website URL and reports those resolution-only accounts separately.
 - Basic HTTP fetch attempts are now tracked so blocked sites can move into a future browser-backed retry queue without using your local IP.
 - Browser retries are a separate command so they can later run from cloud infrastructure without using your local IP.
+- Blocked-site retries now use progressive cooldown windows so the system does not hammer the same domain repeatedly overnight.
 - Contact extraction currently only promotes contacts when a public email, nearby person name, and recognizable leadership title are all present.
 - Dealer validation is intentionally conservative and is meant to tighten before broad-scale sync and activation.
 - The normalization pipeline is local CLI-first, but organized so it can later move to Cloud Run jobs.

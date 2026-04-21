@@ -30,7 +30,10 @@ $envVars = @(
 ) -join ","
 
 Write-Host "Ensuring Artifact Registry repository exists..."
-cmd /c "gcloud artifacts repositories create $Repository --repository-format=docker --location=$Region --description=""Dealer contact system images"" --project=$ProjectId" 2>$null
+cmd /c "gcloud artifacts repositories describe $Repository --location=$Region --project=$ProjectId >nul 2>nul"
+if ($LASTEXITCODE -ne 0) {
+    cmd /c "gcloud artifacts repositories create $Repository --repository-format=docker --location=$Region --description=""Dealer contact system images"" --project=$ProjectId"
+}
 
 Write-Host "Building container image..."
 cmd /c "gcloud builds submit --tag $imageUri --project=$ProjectId"

@@ -32,3 +32,8 @@ class BigQueryRepository:
         if not rows:
             return {}
         return dict(rows[0].items())
+
+    def fetch_all(self, query: str) -> list[dict[str, Any]]:
+        """Fetch all rows from a query as dictionaries."""
+
+        return [dict(row.items()) for row in self.run_query(query)]

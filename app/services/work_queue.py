@@ -161,6 +161,11 @@ class WorkQueueService:
                 self.seed(item)
             return
 
+        if task_type == TASK_RETRY_BLOCKED:
+            self._seed_retry_blocked_queue()
+            logger.info("Seeded work queue | task_type=%s", task_type)
+            return
+
         source_query = self._seed_source_query(task_type)
         merge_query = f"""
         MERGE `{self.settings.account_work_queue_table_fqn}` AS target
@@ -205,6 +210,76 @@ class WorkQueueService:
         """
         self.repository.execute_statement(merge_query)
         logger.info("Seeded work queue | task_type=%s", task_type)
+
+    def _seed_retry_blocked_queue(self) -> None:
+        """Seed or reopen blocked-site retry work items only when cooldown has expired."""
+
+        source_query = f"""
+        SELECT
+          '{TASK_RETRY_BLOCKED}' AS task_type,
+          account_key,
+          40 AS priority
+        FROM `{self.settings.dealer_accounts_table_fqn}`
+        WHERE dealer_classification IN ('dealer', 'dealer_group')
+          AND fetch_status = 'blocked'
+          AND {self._blocked_retry_due_sql('')}
+        """
+        merge_query = f"""
+        MERGE `{self.settings.account_work_queue_table_fqn}` AS target
+        USING (
+          {source_query}
+        ) AS source
+        ON target.task_type = source.task_type
+           AND target.account_key = source.account_key
+        WHEN MATCHED AND target.status IN ('completed', 'failed') THEN
+          UPDATE SET
+            status = 'pending',
+            priority = source.priority,
+            lease_owner = NULL,
+            lease_expires_at = NULL,
+            next_attempt_at = CURRENT_TIMESTAMP(),
+            completed_at = NULL,
+            updated_at = CURRENT_TIMESTAMP()
+        WHEN MATCHED AND target.status = 'retry' THEN
+          UPDATE SET
+            priority = source.priority,
+            next_attempt_at = CURRENT_TIMESTAMP(),
+            updated_at = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN
+          INSERT (
+            work_item_id,
+            task_type,
+            account_key,
+            status,
+            priority,
+            attempt_count,
+            lease_owner,
+            lease_expires_at,
+            last_attempt_at,
+            next_attempt_at,
+            completed_at,
+            last_error,
+            created_at,
+            updated_at
+          )
+          VALUES (
+            GENERATE_UUID(),
+            source.task_type,
+            source.account_key,
+            'pending',
+            source.priority,
+            0,
+            NULL,
+            NULL,
+            NULL,
+            CURRENT_TIMESTAMP(),
+            NULL,
+            NULL,
+            CURRENT_TIMESTAMP(),
+            CURRENT_TIMESTAMP()
+          )
+        """
+        self.repository.execute_statement(merge_query)
 
     def run_worker(
         self,
@@ -337,8 +412,27 @@ class WorkQueueService:
             FROM `{self.settings.dealer_accounts_table_fqn}`
             WHERE dealer_classification IN ('dealer', 'dealer_group')
               AND fetch_status = 'blocked'
+              AND {self._blocked_retry_due_sql('')}
             """
         raise ValueError(f"Unsupported task type: {task_type}")
+
+    def _blocked_retry_due_sql(self, alias: str) -> str:
+        """Return SQL that enforces progressively slower blocked-site retries."""
+
+        prefix = f"{alias}." if alias else ""
+        short_hours = self.settings.blocked_retry_short_cooldown_hours
+        medium_hours = self.settings.blocked_retry_medium_cooldown_hours
+        long_hours = self.settings.blocked_retry_long_cooldown_hours
+        return f"""
+        (
+          {prefix}last_fetch_attempt_at IS NULL
+          OR CURRENT_TIMESTAMP() >= CASE
+            WHEN IFNULL({prefix}blocked_attempt_count, 0) <= 1 THEN TIMESTAMP_ADD({prefix}last_fetch_attempt_at, INTERVAL {short_hours} HOUR)
+            WHEN IFNULL({prefix}blocked_attempt_count, 0) <= 3 THEN TIMESTAMP_ADD({prefix}last_fetch_attempt_at, INTERVAL {medium_hours} HOUR)
+            ELSE TIMESTAMP_ADD({prefix}last_fetch_attempt_at, INTERVAL {long_hours} HOUR)
+          END
+        )
+        """
 
     def _claim_batch(
         self,

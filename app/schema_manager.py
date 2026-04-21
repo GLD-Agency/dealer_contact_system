@@ -154,6 +154,26 @@ class SchemaManager:
               updated_at TIMESTAMP
             )
             """,
+            self.settings.dashboard_snapshots_table_fqn: f"""
+            CREATE TABLE IF NOT EXISTS `{self.settings.dashboard_snapshots_table_fqn}` (
+              snapshot_id STRING NOT NULL,
+              snapshot_at TIMESTAMP NOT NULL,
+              source_contacts INT64,
+              dealer_accounts INT64,
+              validated_dealers INT64,
+              validated_dealer_groups INT64,
+              validated_websites INT64,
+              enriched_websites INT64,
+              prospect_contacts INT64,
+              website_extracted_contacts INT64,
+              blocked_fetch_accounts INT64,
+              queued_validate INT64,
+              queued_enrich INT64,
+              queued_extract INT64,
+              queued_retry_blocked INT64,
+              created_at TIMESTAMP
+            )
+            """,
         }
 
         for table_name, statement in statements.items():

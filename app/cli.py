@@ -7,6 +7,8 @@ import argparse
 from app.bigquery_client import get_bigquery_client
 from app.bigquery_repository import BigQueryRepository
 from app.config import Settings, get_settings
+from app.dashboard_service import DashboardService
+from app.dashboard_web import run_dashboard
 from app.logging_utils import configure_logging, get_logger
 from app.schema_manager import SchemaManager
 from app.services.account_enrichment import AccountEnrichmentService
@@ -184,6 +186,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print source and canonical BigQuery table counts.",
     )
 
+    subparsers.add_parser(
+        "serve-dashboard",
+        help="Run the one-page dashboard UI locally.",
+    )
+
+    subparsers.add_parser(
+        "capture-dashboard-snapshot",
+        help="Store one dashboard metrics snapshot for before/after reporting.",
+    )
+
     return parser
 
 
@@ -203,6 +215,7 @@ def main() -> None:
     dealer_validation_service = DealerValidationService(repository, settings)
     browser_retry_service = BrowserRetryService(repository, settings)
     work_queue_service = WorkQueueService(repository, settings)
+    dashboard_service = DashboardService(repository, settings)
 
     logger.info(
         "Starting command | environment=%s | project=%s | dataset=%s | command=%s",
@@ -303,11 +316,23 @@ def main() -> None:
             batch_size=settings.retry_blocked_worker_batch_size,
             dry_run=args.dry_run,
         )
+        if not args.dry_run:
+            dashboard_service.capture_snapshot()
         logger.info("Queue cycle command complete.")
         return
 
     if args.command == "report":
         print_report(repository, settings)
+        return
+
+    if args.command == "serve-dashboard":
+        run_dashboard()
+        return
+
+    if args.command == "capture-dashboard-snapshot":
+        schema_manager.ensure_tables()
+        dashboard_service.capture_snapshot()
+        logger.info("Dashboard snapshot capture complete.")
         return
 
 

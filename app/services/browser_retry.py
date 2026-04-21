@@ -38,6 +38,7 @@ class BrowserRetryService:
         FROM `{self.settings.dealer_accounts_table_fqn}`
         WHERE dealer_classification IN ('dealer', 'dealer_group')
           AND fetch_status = 'blocked'
+          AND {self._retry_due_sql()}
         """
         row = self.repository.fetch_one(query)
         return BrowserRetryPreview(blocked_accounts=int(row.get("blocked_accounts", 0)))
@@ -83,13 +84,32 @@ class BrowserRetryService:
         FROM `{self.settings.dealer_accounts_table_fqn}`
         WHERE dealer_classification IN ('dealer', 'dealer_group')
           AND fetch_status = 'blocked'
+          AND {self._retry_due_sql()}
           {account_filter}
         ORDER BY
           IFNULL(last_fetch_attempt_at, TIMESTAMP('1970-01-01')) ASC,
+          IFNULL(blocked_attempt_count, 0) ASC,
           account_key ASC
         LIMIT {row_limit}
         """
         return [dict(row.items()) for row in self.repository.run_query(query)]
+
+    def _retry_due_sql(self) -> str:
+        """Return SQL for when a blocked domain is eligible for another retry."""
+
+        short_hours = self.settings.blocked_retry_short_cooldown_hours
+        medium_hours = self.settings.blocked_retry_medium_cooldown_hours
+        long_hours = self.settings.blocked_retry_long_cooldown_hours
+        return f"""
+        (
+          last_fetch_attempt_at IS NULL
+          OR CURRENT_TIMESTAMP() >= CASE
+            WHEN IFNULL(blocked_attempt_count, 0) <= 1 THEN TIMESTAMP_ADD(last_fetch_attempt_at, INTERVAL {short_hours} HOUR)
+            WHEN IFNULL(blocked_attempt_count, 0) <= 3 THEN TIMESTAMP_ADD(last_fetch_attempt_at, INTERVAL {medium_hours} HOUR)
+            ELSE TIMESTAMP_ADD(last_fetch_attempt_at, INTERVAL {long_hours} HOUR)
+          END
+        )
+        """
 
     def _retry_account(self, account: dict[str, str]) -> None:
         """Retry one blocked website in a browser context."""
