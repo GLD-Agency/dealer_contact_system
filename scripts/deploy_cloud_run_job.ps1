@@ -9,6 +9,8 @@ param(
     [int]$EnrichBatchSize = 25,
     [int]$ExtractBatchSize = 25,
     [int]$RetryBlockedBatchSize = 10,
+    [int]$CampaignMonitorSyncBatchSize = 100,
+    [bool]$CampaignMonitorSyncEnabled = $true,
     [int]$TaskTimeoutSeconds = 3600
 )
 
@@ -26,8 +28,20 @@ $envVars = @(
     "VALIDATE_WORKER_BATCH_SIZE=$ValidateBatchSize",
     "ENRICH_WORKER_BATCH_SIZE=$EnrichBatchSize",
     "EXTRACT_WORKER_BATCH_SIZE=$ExtractBatchSize",
-    "RETRY_BLOCKED_WORKER_BATCH_SIZE=$RetryBlockedBatchSize"
+    "RETRY_BLOCKED_WORKER_BATCH_SIZE=$RetryBlockedBatchSize",
+    "CAMPAIGN_MONITOR_SYNC_BATCH_SIZE=$CampaignMonitorSyncBatchSize",
+    "CAMPAIGN_MONITOR_SYNC_ENABLED=$($CampaignMonitorSyncEnabled.ToString().ToLower())"
 ) -join ","
+
+if ($env:CAMPAIGN_MONITOR_API_KEY) {
+    $envVars = "$envVars,CAMPAIGN_MONITOR_API_KEY=$($env:CAMPAIGN_MONITOR_API_KEY)"
+}
+if ($env:CAMPAIGN_MONITOR_CLIENT_ID) {
+    $envVars = "$envVars,CAMPAIGN_MONITOR_CLIENT_ID=$($env:CAMPAIGN_MONITOR_CLIENT_ID)"
+}
+if ($env:CAMPAIGN_MONITOR_MASTER_LIST_NAME) {
+    $envVars = "$envVars,CAMPAIGN_MONITOR_MASTER_LIST_NAME=$($env:CAMPAIGN_MONITOR_MASTER_LIST_NAME)"
+}
 
 Write-Host "Ensuring Artifact Registry repository exists..."
 cmd /c "gcloud artifacts repositories describe $Repository --location=$Region --project=$ProjectId >nul 2>nul"

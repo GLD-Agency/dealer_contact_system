@@ -136,6 +136,8 @@ gcloud auth application-default login
 - `ENRICH_WORKER_BATCH_SIZE`: Batch size for one queue-cycle enrichment step
 - `EXTRACT_WORKER_BATCH_SIZE`: Batch size for one queue-cycle contact extraction step
 - `RETRY_BLOCKED_WORKER_BATCH_SIZE`: Batch size for one queue-cycle blocked-site retry step
+- `CAMPAIGN_MONITOR_SYNC_BATCH_SIZE`: Subscriber batch size for one Campaign Monitor sync step
+- `CAMPAIGN_MONITOR_SYNC_ENABLED`: Whether the queue cycle should push subscribers into Campaign Monitor
 - `CLOUD_RUN_REGION`: Target region for Cloud Run jobs
 - `BROWSER_TIMEOUT_SECONDS`: Timeout for browser-backed blocked-site retries
 - `BLOCKED_RETRY_SHORT_COOLDOWN_HOURS`: Cooldown after the first blocked-site attempts
@@ -423,10 +425,24 @@ The project now includes a simple one-page dashboard with:
 - high-level connection and system status
 - integration status for Campaign Monitor, Meta, and Google Ads
 
+The project also keeps a source-feed catalog for external CSV imports so we can preserve:
+
+- original file name
+- inferred OEM where the file is manufacturer-specific
+- Canada vs United States market separation
+- current-client vs prospect audience type
+- engagement/openers list attribution
+
 Run it locally:
 
 ```bash
 python main.py serve-dashboard
+```
+
+Inspect the external source-feed catalog:
+
+```bash
+python main.py list-source-feeds
 ```
 
 Then open:
@@ -523,3 +539,4 @@ The contact extraction pipeline writes website-derived leadership contacts for v
 - Dealer validation is intentionally conservative and is meant to tighten before broad-scale sync and activation.
 - The normalization pipeline is local CLI-first, but organized so it can later move to Cloud Run jobs.
 - Crawling, role extraction, validation, Campaign Monitor sync, Airtable sync, and multi-agent orchestration are intentionally deferred.
+- Campaign Monitor uses one master list with reusable segments, including OEM segments plus audience/geography segments such as Canada, United States, current clients, and prospects.

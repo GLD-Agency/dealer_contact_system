@@ -29,6 +29,8 @@ class Settings:
     account_work_queue_table: str
     pipeline_runs_table: str
     dashboard_snapshots_table: str
+    external_seed_contacts_table: str
+    external_seed_directory: str
     enrichment_batch_size: int
     worker_batch_size: int
     worker_lease_minutes: int
@@ -36,6 +38,8 @@ class Settings:
     enrich_worker_batch_size: int
     extract_worker_batch_size: int
     retry_blocked_worker_batch_size: int
+    campaign_monitor_sync_batch_size: int
+    campaign_monitor_sync_enabled: bool
     cloud_run_region: str
     request_timeout_seconds: int
     browser_timeout_seconds: int
@@ -99,6 +103,12 @@ class Settings:
 
         return self.table_fqn(self.dashboard_snapshots_table)
 
+    @property
+    def external_seed_contacts_table_fqn(self) -> str:
+        """Return the fully qualified external seed contacts table name."""
+
+        return self.table_fqn(self.external_seed_contacts_table)
+
     def table_fqn(self, table_name: str) -> str:
         """Build a fully qualified BigQuery table name."""
 
@@ -123,6 +133,11 @@ def get_settings() -> Settings:
         account_work_queue_table=os.getenv("ACCOUNT_WORK_QUEUE_TABLE", "account_work_queue"),
         pipeline_runs_table=os.getenv("PIPELINE_RUNS_TABLE", "pipeline_runs"),
         dashboard_snapshots_table=os.getenv("DASHBOARD_SNAPSHOTS_TABLE", "dashboard_snapshots"),
+        external_seed_contacts_table=os.getenv("EXTERNAL_SEED_CONTACTS_TABLE", "external_seed_contacts"),
+        external_seed_directory=os.getenv(
+            "EXTERNAL_SEED_DIRECTORY",
+            str(Path.home() / "Downloads"),
+        ),
         enrichment_batch_size=int(os.getenv("ENRICHMENT_BATCH_SIZE", "25")),
         worker_batch_size=int(os.getenv("WORKER_BATCH_SIZE", "50")),
         worker_lease_minutes=int(os.getenv("WORKER_LEASE_MINUTES", "30")),
@@ -130,6 +145,8 @@ def get_settings() -> Settings:
         enrich_worker_batch_size=int(os.getenv("ENRICH_WORKER_BATCH_SIZE", "25")),
         extract_worker_batch_size=int(os.getenv("EXTRACT_WORKER_BATCH_SIZE", "25")),
         retry_blocked_worker_batch_size=int(os.getenv("RETRY_BLOCKED_WORKER_BATCH_SIZE", "10")),
+        campaign_monitor_sync_batch_size=int(os.getenv("CAMPAIGN_MONITOR_SYNC_BATCH_SIZE", "100")),
+        campaign_monitor_sync_enabled=os.getenv("CAMPAIGN_MONITOR_SYNC_ENABLED", "false").lower() == "true",
         cloud_run_region=os.getenv("CLOUD_RUN_REGION", "us-central1"),
         request_timeout_seconds=int(os.getenv("REQUEST_TIMEOUT_SECONDS", "12")),
         browser_timeout_seconds=int(os.getenv("BROWSER_TIMEOUT_SECONDS", "30")),

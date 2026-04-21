@@ -11,11 +11,15 @@ from app.dashboard_service import DashboardService
 from app.dashboard_web import run_dashboard
 from app.logging_utils import configure_logging, get_logger
 from app.schema_manager import SchemaManager
+from app.source_catalog import SOURCE_FEEDS
 from app.services.account_enrichment import AccountEnrichmentService
 from app.services.browser_retry import BrowserRetryService
 from app.services.campaign_monitor import CampaignMonitorService
 from app.services.contact_extraction import ContactExtractionService
 from app.services.dealer_validation import DealerValidationService
+from app.services.external_seed_import import ExternalSeedImportService
+from app.services.external_seed_promotion import ExternalSeedPromotionService
+from app.services.low_risk_enrichment import LowRiskEnrichmentService
 from app.services.normalization import NormalizationService
 from app.services.work_queue import TASK_TYPES, WorkQueueService
 
@@ -196,6 +200,37 @@ def build_parser() -> argparse.ArgumentParser:
         "capture-dashboard-snapshot",
         help="Store one dashboard metrics snapshot for before/after reporting.",
     )
+    subparsers.add_parser(
+        "list-source-feeds",
+        help="Show the catalog of external CSV seed feeds and their intended segmentation metadata.",
+    )
+    import_seeds_parser = subparsers.add_parser(
+        "import-external-seeds",
+        help="One-time import of external CSV seed files into the raw external_seed_contacts table.",
+    )
+    import_seeds_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview the external CSV seed import without writing any BigQuery rows.",
+    )
+    promote_seeds_parser = subparsers.add_parser(
+        "promote-external-seeds",
+        help="Promote raw external seed contacts into canonical account/contact tables.",
+    )
+    promote_seeds_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview the external seed promotion without writing canonical rows.",
+    )
+    low_risk_parser = subparsers.add_parser(
+        "run-low-risk-enrichment",
+        help="Apply cheap, staged enrichment and activation readiness labels to canonical records.",
+    )
+    low_risk_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview low-risk enrichment counts without writing any updates.",
+    )
 
     campaign_monitor_parser = subparsers.add_parser(
         "check-campaign-monitor",
@@ -254,6 +289,9 @@ def main() -> None:
     work_queue_service = WorkQueueService(repository, settings)
     dashboard_service = DashboardService(repository, settings)
     campaign_monitor_service = CampaignMonitorService(repository, settings)
+    external_seed_import_service = ExternalSeedImportService(repository, settings)
+    external_seed_promotion_service = ExternalSeedPromotionService(repository, settings)
+    low_risk_enrichment_service = LowRiskEnrichmentService(repository, settings)
 
     logger.info(
         "Starting command | environment=%s | project=%s | dataset=%s | command=%s",
@@ -357,6 +395,11 @@ def main() -> None:
         if not args.dry_run:
             dashboard_service.capture_snapshot()
             campaign_monitor_service.check_connection(dry_run=False)
+            if settings.campaign_monitor_sync_enabled:
+                campaign_monitor_service.sync_subscribers(
+                    dry_run=False,
+                    limit=settings.campaign_monitor_sync_batch_size,
+                )
         logger.info("Queue cycle command complete.")
         return
 
@@ -372,6 +415,59 @@ def main() -> None:
         schema_manager.ensure_tables()
         dashboard_service.capture_snapshot()
         logger.info("Dashboard snapshot capture complete.")
+        return
+
+    if args.command == "list-source-feeds":
+        logger.info("Configured external source feeds: %s", len(SOURCE_FEEDS))
+        for feed in SOURCE_FEEDS:
+            print(
+                " | ".join(
+                    [
+                        feed.file_name,
+                        f"audience={feed.audience_type}",
+                        f"market={feed.market}",
+                        f"country={feed.country}",
+                        f"brand={feed.inferred_brand or 'mixed'}",
+                        f"group={feed.source_group}",
+                        f"notes={feed.notes}",
+                    ]
+                )
+            )
+        return
+
+    if args.command == "import-external-seeds":
+        schema_manager.ensure_tables()
+        summaries = external_seed_import_service.import_catalog(dry_run=args.dry_run)
+        print("External seed import summary:")
+        for summary in summaries:
+            print(
+                " | ".join(
+                    [
+                        summary.file_name,
+                        f"total_rows={summary.total_rows}",
+                        f"valid_email_rows={summary.valid_email_rows}",
+                        f"personal_email_rows={summary.personal_email_rows}",
+                        f"existing_raw_rows={summary.existing_raw_rows}",
+                        f"would_insert_rows={summary.would_insert_rows}",
+                        f"audience={summary.audience_type}",
+                        f"market={summary.market}",
+                        f"country={summary.country}",
+                        f"brand={summary.inferred_brand or 'mixed'}",
+                    ]
+                )
+            )
+        return
+
+    if args.command == "promote-external-seeds":
+        schema_manager.ensure_tables()
+        external_seed_promotion_service.promote(dry_run=args.dry_run)
+        logger.info("External seed promotion command complete.")
+        return
+
+    if args.command == "run-low-risk-enrichment":
+        schema_manager.ensure_tables()
+        low_risk_enrichment_service.run(dry_run=args.dry_run)
+        logger.info("Low-risk enrichment command complete.")
         return
 
     if args.command == "check-campaign-monitor":
@@ -455,11 +551,15 @@ def print_report(repository: BigQueryRepository, settings: Settings) -> None:
       (SELECT COUNTIF(account_city IS NOT NULL AND account_state IS NOT NULL) FROM `{settings.dealer_accounts_table_fqn}`) AS enriched_locations,
       (SELECT COUNTIF(dealer_classification = 'dealer') FROM `{settings.dealer_accounts_table_fqn}`) AS validated_dealers,
       (SELECT COUNTIF(dealer_classification = 'dealer_group') FROM `{settings.dealer_accounts_table_fqn}`) AS validated_dealer_groups,
+      (SELECT COUNTIF(activation_status = 'activation_ready') FROM `{settings.dealer_accounts_table_fqn}`) AS activation_ready_accounts,
       (SELECT COUNTIF(dealer_classification = 'vendor') FROM `{settings.dealer_accounts_table_fqn}`) AS validated_vendors,
       (SELECT COUNTIF(dealer_classification = 'non_dealer') FROM `{settings.dealer_accounts_table_fqn}`) AS validated_non_dealers,
       (SELECT COUNTIF(dealer_classification = 'oem') FROM `{settings.dealer_accounts_table_fqn}`) AS validated_oems,
       (SELECT COUNTIF(dealer_classification = 'unknown') FROM `{settings.dealer_accounts_table_fqn}`) AS validated_unknowns,
       (SELECT COUNT(*) FROM `{settings.prospect_contacts_table_fqn}`) AS prospect_contacts,
+      (SELECT COUNTIF(activation_status = 'activation_ready') FROM `{settings.prospect_contacts_table_fqn}`) AS activation_ready_contacts,
+      (SELECT COUNTIF(audience_type = 'current_client') FROM `{settings.prospect_contacts_table_fqn}`) AS current_client_contacts,
+      (SELECT COUNTIF(country = 'Canada') FROM `{settings.prospect_contacts_table_fqn}`) AS canada_contacts,
       (SELECT COUNTIF(source_type = 'website_contact_extraction') FROM `{settings.prospect_contacts_table_fqn}`) AS website_extracted_contacts,
       (SELECT COUNT(*) FROM `{settings.account_relationships_table_fqn}`) AS account_relationships,
       (SELECT COUNT(*) FROM `{settings.sync_targets_table_fqn}`) AS sync_targets,
@@ -489,11 +589,15 @@ def print_report(repository: BigQueryRepository, settings: Settings) -> None:
     print(f"Enriched locations: {report.get('enriched_locations', 0)}")
     print(f"Validated dealers: {report.get('validated_dealers', 0)}")
     print(f"Validated dealer groups: {report.get('validated_dealer_groups', 0)}")
+    print(f"Activation-ready accounts: {report.get('activation_ready_accounts', 0)}")
     print(f"Validated vendors: {report.get('validated_vendors', 0)}")
     print(f"Validated non-dealers: {report.get('validated_non_dealers', 0)}")
     print(f"Validated OEMs: {report.get('validated_oems', 0)}")
     print(f"Validated unknowns: {report.get('validated_unknowns', 0)}")
     print(f"Prospect contacts: {report.get('prospect_contacts', 0)}")
+    print(f"Activation-ready contacts: {report.get('activation_ready_contacts', 0)}")
+    print(f"Current-client contacts: {report.get('current_client_contacts', 0)}")
+    print(f"Canada contacts: {report.get('canada_contacts', 0)}")
     print(f"Website-extracted contacts: {report.get('website_extracted_contacts', 0)}")
     print(f"Account relationships: {report.get('account_relationships', 0)}")
     print(f"Sync targets: {report.get('sync_targets', 0)}")

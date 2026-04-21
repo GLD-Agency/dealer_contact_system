@@ -58,9 +58,19 @@ class CampaignMonitorService:
         "Dealer Name": "Text",
         "City": "Text",
         "State": "Text",
+        "Country": "Text",
+        "Market": "Text",
+        "Audience Type": "Text",
+        "Source List": "Text",
         "Role Family": "Text",
         "Dealer Classification": "Text",
     }
+    STATIC_SEGMENT_DEFINITIONS = (
+        ("Automation Canada Subscribers", "Country", "Canada"),
+        ("Automation United States Subscribers", "Country", "United States"),
+        ("Automation Current Clients", "Audience Type", "current_client"),
+        ("Automation Prospects", "Audience Type", "prospect"),
+    )
 
     def __init__(self, repository: BigQueryRepository, settings: Settings) -> None:
         self.repository = repository
@@ -172,10 +182,10 @@ class CampaignMonitorService:
                 status="success",
                 detail=(
                     f"Would create master list '{self.settings.campaign_monitor_master_list_name}' "
-                    f"and {len(brands)} OEM segments."
+                    f"and {len(brands) + len(self.STATIC_SEGMENT_DEFINITIONS)} total segments."
                 ),
                 list_id=None,
-                created_segments=len(brands),
+                created_segments=len(brands) + len(self.STATIC_SEGMENT_DEFINITIONS),
                 existing_segments=0,
             )
 
@@ -193,9 +203,10 @@ class CampaignMonitorService:
         existing_names = {str(item.get("Title", "")).strip() for item in existing_segments}
         created_segments = 0
 
-        oem_key = field_map.get("OEM", "[OEM]")
-        for brand in brands:
-            segment_name = f"Automation {brand} Subscribers"
+        for segment_name, rule_type, clause in self._build_segment_definitions(
+            brands=brands,
+            field_map=field_map,
+        ):
             if segment_name in existing_names:
                 continue
             created_segments += 1
@@ -207,8 +218,8 @@ class CampaignMonitorService:
                     {
                         "Rules": [
                             {
-                                "RuleType": oem_key,
-                                "Clause": f"EQUALS {brand}",
+                                "RuleType": rule_type,
+                                "Clause": clause,
                             }
                         ]
                     }
@@ -303,6 +314,10 @@ class CampaignMonitorService:
                         {"Key": field_map["Dealer Name"], "Value": subscriber["dealer_name"]},
                         {"Key": field_map["City"], "Value": subscriber["city"]},
                         {"Key": field_map["State"], "Value": subscriber["state"]},
+                        {"Key": field_map["Country"], "Value": subscriber["country"]},
+                        {"Key": field_map["Market"], "Value": subscriber["market"]},
+                        {"Key": field_map["Audience Type"], "Value": subscriber["audience_type"]},
+                        {"Key": field_map["Source List"], "Value": subscriber["source_list"]},
                         {"Key": field_map["Role Family"], "Value": subscriber["role_family"]},
                         {"Key": field_map["Dealer Classification"], "Value": subscriber["dealer_classification"]},
                     ],
@@ -520,6 +535,10 @@ class CampaignMonitorService:
             COALESCE(da.inferred_brand, 'Unknown') AS oem,
             COALESCE(da.account_city, '') AS city,
             COALESCE(da.account_state, '') AS state,
+            COALESCE(NULLIF(TRIM(pc.country), ''), 'United States') AS country,
+            COALESCE(NULLIF(TRIM(pc.market), ''), 'US') AS market,
+            COALESCE(NULLIF(TRIM(pc.audience_type), ''), 'prospect') AS audience_type,
+            COALESCE(NULLIF(TRIM(pc.source_file_name), ''), pc.source_table, 'contact_master') AS source_list,
             COALESCE(da.dealer_classification, '') AS dealer_classification,
             COALESCE(pc.confidence_score, 0) AS confidence_score,
             ROW_NUMBER() OVER (
@@ -531,13 +550,17 @@ class CampaignMonitorService:
             ON ar.prospect_contact_id = pc.prospect_contact_id
           JOIN `{self.settings.dealer_accounts_table_fqn}` AS da
             ON da.dealer_account_id = ar.dealer_account_id
-          WHERE da.dealer_classification IN ('dealer', 'dealer_group')
-            AND da.inferred_brand IS NOT NULL
-            AND TRIM(da.inferred_brand) != ''
-            AND pc.email IS NOT NULL
+          WHERE pc.email IS NOT NULL
             AND TRIM(pc.email) != ''
             AND COALESCE(pc.is_personal_email, FALSE) = FALSE
             AND LOWER(COALESCE(pc.contact_status, 'active')) NOT IN ('inactive', 'suppressed', 'invalid')
+            AND COALESCE(pc.activation_status, 'enrichment_needed') = 'activation_ready'
+            AND (
+              da.dealer_classification IN ('dealer', 'dealer_group')
+              OR pc.source_table = '{self.settings.external_seed_contacts_table}'
+              OR pc.audience_type = 'current_client'
+              OR pc.country = 'Canada'
+            )
         )
         SELECT
           email,
@@ -547,6 +570,10 @@ class CampaignMonitorService:
           oem,
           city,
           state,
+          country,
+          market,
+          audience_type,
+          source_list,
           dealer_classification
         FROM ranked_contacts
         WHERE row_number = 1
@@ -563,6 +590,10 @@ class CampaignMonitorService:
                 "oem": str(row.get("oem", "") or "").strip() or "Unknown",
                 "city": str(row.get("city", "") or "").strip(),
                 "state": str(row.get("state", "") or "").strip(),
+                "country": str(row.get("country", "") or "").strip() or "United States",
+                "market": str(row.get("market", "") or "").strip() or "US",
+                "audience_type": str(row.get("audience_type", "") or "").strip() or "prospect",
+                "source_list": str(row.get("source_list", "") or "").strip() or "contact_master",
                 "dealer_classification": str(row.get("dealer_classification", "") or "").strip(),
             }
             for row in rows
@@ -605,6 +636,31 @@ class CampaignMonitorService:
         """
         rows = self.repository.fetch_all(query)
         return [str(row["inferred_brand"]).strip() for row in rows if row.get("inferred_brand")]
+
+    def _build_segment_definitions(
+        self,
+        brands: list[str],
+        field_map: dict[str, str],
+    ) -> list[tuple[str, str, str]]:
+        """Build OEM plus geography/audience segment definitions."""
+
+        definitions: list[tuple[str, str, str]] = []
+        oem_key = field_map.get("OEM", "[OEM]")
+
+        for brand in brands:
+            definitions.append(
+                (
+                    f"Automation {brand} Subscribers",
+                    oem_key,
+                    f"EQUALS {brand}",
+                )
+            )
+
+        for segment_name, field_name, value in self.STATIC_SEGMENT_DEFINITIONS:
+            field_key = field_map.get(field_name, f"[{field_name}]")
+            definitions.append((segment_name, field_key, f"EQUALS {value}"))
+
+        return definitions
 
     def _api_get(self, path: str) -> Any:
         """Send a GET request to Campaign Monitor and return the decoded JSON."""
