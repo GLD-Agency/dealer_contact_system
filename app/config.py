@@ -44,6 +44,7 @@ class Settings:
     blocked_retry_long_cooldown_hours: int
     campaign_monitor_api_key: str | None
     campaign_monitor_client_id: str | None
+    campaign_monitor_master_list_name: str
     meta_access_token: str | None
     meta_ad_account_id: str | None
     google_ads_developer_token: str | None
@@ -137,6 +138,10 @@ def get_settings() -> Settings:
         blocked_retry_long_cooldown_hours=int(os.getenv("BLOCKED_RETRY_LONG_COOLDOWN_HOURS", "72")),
         campaign_monitor_api_key=os.getenv("CAMPAIGN_MONITOR_API_KEY"),
         campaign_monitor_client_id=os.getenv("CAMPAIGN_MONITOR_CLIENT_ID"),
+        campaign_monitor_master_list_name=os.getenv(
+            "CAMPAIGN_MONITOR_MASTER_LIST_NAME",
+            "Automation All Subscribers",
+        ),
         meta_access_token=os.getenv("META_ACCESS_TOKEN"),
         meta_ad_account_id=os.getenv("META_AD_ACCOUNT_ID"),
         google_ads_developer_token=os.getenv("GOOGLE_ADS_DEVELOPER_TOKEN"),

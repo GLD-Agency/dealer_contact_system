@@ -207,6 +207,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Test the connection logic without writing the result to BigQuery.",
     )
 
+    campaign_monitor_structure_parser = subparsers.add_parser(
+        "ensure-campaign-monitor-structure",
+        help="Create the master Campaign Monitor list, required custom fields, and OEM segments.",
+    )
+    campaign_monitor_structure_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview the Campaign Monitor structure changes without creating anything.",
+    )
+
     return parser
 
 
@@ -354,6 +364,24 @@ def main() -> None:
         logger.info("Campaign Monitor check complete | status=%s | detail=%s", result.status, result.detail)
         print(f"Campaign Monitor status: {result.status}")
         print(result.detail)
+        return
+
+    if args.command == "ensure-campaign-monitor-structure":
+        schema_manager.ensure_tables()
+        result = campaign_monitor_service.ensure_master_list_and_segments(dry_run=args.dry_run)
+        logger.info(
+            "Campaign Monitor structure check complete | status=%s | list_id=%s | created_segments=%s | existing_segments=%s",
+            result.status,
+            result.list_id,
+            result.created_segments,
+            result.existing_segments,
+        )
+        print(f"Campaign Monitor structure status: {result.status}")
+        print(result.detail)
+        if result.list_id:
+            print(f"Master list ID: {result.list_id}")
+        print(f"Created segments: {result.created_segments}")
+        print(f"Existing segments: {result.existing_segments}")
         return
 
 

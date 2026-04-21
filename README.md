@@ -177,6 +177,8 @@ python -m app run-queue-cycle --seed
 python -m app capture-dashboard-snapshot
 python -m app check-campaign-monitor --dry-run
 python -m app check-campaign-monitor
+python -m app ensure-campaign-monitor-structure --dry-run
+python -m app ensure-campaign-monitor-structure
 python -m app report
 python -m app serve-dashboard
 ```
@@ -207,6 +209,8 @@ python main.py run-queue-cycle --seed
 python main.py capture-dashboard-snapshot
 python main.py check-campaign-monitor --dry-run
 python main.py check-campaign-monitor
+python main.py ensure-campaign-monitor-structure --dry-run
+python main.py ensure-campaign-monitor-structure
 python main.py report
 python main.py serve-dashboard
 ```
