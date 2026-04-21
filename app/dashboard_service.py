@@ -41,6 +41,7 @@ class DashboardService:
             "overview": overview,
             "snapshot_summary": self._build_snapshot_summary(latest_snapshot, previous_snapshot),
             "trend_rows": trend_rows,
+            "trend_cards": self._build_trend_cards(trend_rows),
             "connections": self._get_connections(overview),
             "classification_counts": self._get_classification_counts(),
             "fetch_status_counts": self._get_fetch_status_counts(),
@@ -230,6 +231,33 @@ class DashboardService:
             "cards": cards,
         }
 
+    def _build_trend_cards(self, trend_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Build compact sparkline cards from recent snapshot rows."""
+
+        metrics = [
+            ("validated_dealers", "Validated Dealers"),
+            ("validated_websites", "Website-Ready Dealers"),
+            ("website_extracted_contacts", "Website Contacts"),
+            ("blocked_fetch_accounts", "Blocked Dealer Sites"),
+        ]
+        if not trend_rows:
+            return []
+
+        ordered_rows = list(reversed(trend_rows))
+        cards: list[dict[str, Any]] = []
+        for key, label in metrics:
+            values = [int(row.get(key, 0) or 0) for row in ordered_rows]
+            cards.append(
+                {
+                    "label": label,
+                    "current_value": values[-1] if values else 0,
+                    "delta": (values[-1] - values[0]) if len(values) > 1 else 0,
+                    "direction": self._delta_direction((values[-1] - values[0]) if len(values) > 1 else 0),
+                    "sparkline_points": self._build_sparkline_points(values),
+                }
+            )
+        return cards
+
     @staticmethod
     def _delta_direction(delta: int) -> str:
         """Return a CSS-friendly delta direction."""
@@ -239,6 +267,27 @@ class DashboardService:
         if delta < 0:
             return "down"
         return "flat"
+
+    @staticmethod
+    def _build_sparkline_points(values: list[int]) -> str:
+        """Convert metric values into a compact SVG polyline string."""
+
+        if not values:
+            return ""
+        if len(values) == 1:
+            return "0,30 100,30"
+
+        min_value = min(values)
+        max_value = max(values)
+        spread = max(max_value - min_value, 1)
+        x_step = 100 / (len(values) - 1)
+        points: list[str] = []
+        for index, value in enumerate(values):
+            x = round(index * x_step, 2)
+            normalized = (value - min_value) / spread
+            y = round(30 - (normalized * 24), 2)
+            points.append(f"{x},{y}")
+        return " ".join(points)
 
     def _get_connections(self, overview: dict[str, Any]) -> list[DashboardConnectionStatus]:
         """Create human-readable system health rows."""

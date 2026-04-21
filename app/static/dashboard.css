@@ -116,6 +116,11 @@ h1 {
   margin-bottom: 0;
 }
 
+.sparkline-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 0;
+}
+
 .card {
   padding: 20px;
 }
@@ -177,6 +182,40 @@ h1 {
 .delta-flat {
   background: rgba(68, 84, 74, 0.1);
   color: #44544a;
+}
+
+.sparkline-card {
+  background: rgba(255, 248, 237, 0.72);
+  border: 1px solid rgba(68, 84, 74, 0.1);
+  border-radius: 16px;
+  padding: 16px;
+  display: grid;
+  gap: 10px;
+}
+
+.sparkline-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.sparkline-value {
+  font-size: 30px;
+}
+
+.sparkline {
+  width: 100%;
+  height: 48px;
+  overflow: visible;
+}
+
+.sparkline polyline {
+  fill: none;
+  stroke: var(--terracotta);
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .section-head {
@@ -270,6 +309,7 @@ tbody tr:last-child td {
   .hero,
   .metrics-grid,
   .delta-grid,
+  .sparkline-grid,
   .two-column,
   .three-column {
     grid-template-columns: 1fr;

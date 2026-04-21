@@ -13,6 +13,7 @@ from app.logging_utils import configure_logging, get_logger
 from app.schema_manager import SchemaManager
 from app.services.account_enrichment import AccountEnrichmentService
 from app.services.browser_retry import BrowserRetryService
+from app.services.campaign_monitor import CampaignMonitorService
 from app.services.contact_extraction import ContactExtractionService
 from app.services.dealer_validation import DealerValidationService
 from app.services.normalization import NormalizationService
@@ -196,6 +197,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Store one dashboard metrics snapshot for before/after reporting.",
     )
 
+    campaign_monitor_parser = subparsers.add_parser(
+        "check-campaign-monitor",
+        help="Check Campaign Monitor API connectivity and record the latest status.",
+    )
+    campaign_monitor_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Test the connection logic without writing the result to BigQuery.",
+    )
+
     return parser
 
 
@@ -216,6 +227,7 @@ def main() -> None:
     browser_retry_service = BrowserRetryService(repository, settings)
     work_queue_service = WorkQueueService(repository, settings)
     dashboard_service = DashboardService(repository, settings)
+    campaign_monitor_service = CampaignMonitorService(repository, settings)
 
     logger.info(
         "Starting command | environment=%s | project=%s | dataset=%s | command=%s",
@@ -318,6 +330,7 @@ def main() -> None:
         )
         if not args.dry_run:
             dashboard_service.capture_snapshot()
+            campaign_monitor_service.check_connection(dry_run=False)
         logger.info("Queue cycle command complete.")
         return
 
@@ -333,6 +346,14 @@ def main() -> None:
         schema_manager.ensure_tables()
         dashboard_service.capture_snapshot()
         logger.info("Dashboard snapshot capture complete.")
+        return
+
+    if args.command == "check-campaign-monitor":
+        schema_manager.ensure_tables()
+        result = campaign_monitor_service.check_connection(dry_run=args.dry_run)
+        logger.info("Campaign Monitor check complete | status=%s | detail=%s", result.status, result.detail)
+        print(f"Campaign Monitor status: {result.status}")
+        print(result.detail)
         return
 
 

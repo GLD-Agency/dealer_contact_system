@@ -87,6 +87,29 @@
         </div>
       </section>
 
+      <section class="card">
+        <div class="section-head">
+          <h2>Trend Glance</h2>
+          <p>Small visual history from the latest dashboard snapshots so movement is easy to spot.</p>
+        </div>
+        <div class="card-grid sparkline-grid">
+          {% for row in data.trend_cards %}
+          <article class="sparkline-card">
+            <div class="sparkline-head">
+              <span class="stat-label">{{ row.label }}</span>
+              <span class="delta-pill delta-{{ row.direction }}">
+                {% if row.delta > 0 %}+{% endif %}{{ "{:,}".format(row.delta or 0) }}
+              </span>
+            </div>
+            <strong class="sparkline-value">{{ "{:,}".format(row.current_value or 0) }}</strong>
+            <svg class="sparkline" viewBox="0 0 100 36" preserveAspectRatio="none" aria-hidden="true">
+              <polyline points="{{ row.sparkline_points }}" />
+            </svg>
+          </article>
+          {% endfor %}
+        </div>
+      </section>
+
       <section class="card-grid two-column">
         <article class="card">
           <div class="section-head">
