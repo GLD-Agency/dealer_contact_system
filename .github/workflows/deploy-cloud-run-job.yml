@@ -42,11 +42,15 @@ jobs:
             --description="Dealer contact system images" \
             --project="$PROJECT_ID" || true
 
-      - name: Build and push image
+      - name: Build image
         run: |
-          gcloud builds submit \
+          docker build \
             --tag "$REGION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE_NAME:latest" \
-            --project "$PROJECT_ID"
+            .
+
+      - name: Push image
+        run: |
+          docker push "$REGION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE_NAME:latest"
 
       - name: Deploy Cloud Run Job
         run: |
