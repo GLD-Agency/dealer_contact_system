@@ -34,6 +34,19 @@ class CampaignMonitorStructureResult:
     existing_segments: int
 
 
+@dataclass(frozen=True)
+class CampaignMonitorSyncResult:
+    """Summary from one subscriber sync batch."""
+
+    status: str
+    detail: str
+    list_id: str | None
+    submitted_count: int
+    new_subscribers: int
+    existing_subscribers: int
+    failed_count: int
+
+
 class CampaignMonitorService:
     """Run Campaign Monitor health checks and record them in BigQuery."""
 
@@ -226,6 +239,111 @@ class CampaignMonitorService:
             existing_segments=existing_segment_count,
         )
 
+    def sync_subscribers(
+        self,
+        dry_run: bool = False,
+        limit: int = 100,
+    ) -> CampaignMonitorSyncResult:
+        """Sync a deduped batch of marketing-ready subscribers into the master list."""
+
+        if not self.settings.campaign_monitor_api_key or not self.settings.campaign_monitor_client_id:
+            return CampaignMonitorSyncResult(
+                status="failed",
+                detail="Campaign Monitor credentials are missing.",
+                list_id=None,
+                submitted_count=0,
+                new_subscribers=0,
+                existing_subscribers=0,
+                failed_count=0,
+            )
+
+        structure = self.ensure_master_list_and_segments(dry_run=False)
+        if structure.status != "success" or not structure.list_id:
+            return CampaignMonitorSyncResult(
+                status="failed",
+                detail="Campaign Monitor master list is not ready.",
+                list_id=structure.list_id,
+                submitted_count=0,
+                new_subscribers=0,
+                existing_subscribers=0,
+                failed_count=0,
+            )
+
+        field_map = self._ensure_custom_fields(structure.list_id, dry_run=False)
+        subscribers = self._load_sync_candidates(limit=limit)
+        if not subscribers:
+            return CampaignMonitorSyncResult(
+                status="success",
+                detail="No eligible subscribers were found for this sync batch.",
+                list_id=structure.list_id,
+                submitted_count=0,
+                new_subscribers=0,
+                existing_subscribers=0,
+                failed_count=0,
+            )
+
+        if dry_run:
+            return CampaignMonitorSyncResult(
+                status="success",
+                detail=f"Would sync {len(subscribers)} subscribers into {self.settings.campaign_monitor_master_list_name}.",
+                list_id=structure.list_id,
+                submitted_count=len(subscribers),
+                new_subscribers=0,
+                existing_subscribers=0,
+                failed_count=0,
+            )
+
+        payload = {
+            "Subscribers": [
+                {
+                    "EmailAddress": subscriber["email"],
+                    "Name": subscriber["full_name"] or subscriber["email"],
+                    "CustomFields": [
+                        {"Key": field_map["OEM"], "Value": subscriber["oem"]},
+                        {"Key": field_map["Dealer Name"], "Value": subscriber["dealer_name"]},
+                        {"Key": field_map["City"], "Value": subscriber["city"]},
+                        {"Key": field_map["State"], "Value": subscriber["state"]},
+                        {"Key": field_map["Role Family"], "Value": subscriber["role_family"]},
+                        {"Key": field_map["Dealer Classification"], "Value": subscriber["dealer_classification"]},
+                    ],
+                    "ConsentToTrack": "Unchanged",
+                }
+                for subscriber in subscribers
+            ],
+            "Resubscribe": True,
+            "QueueSubscriptionBasedAutoResponders": False,
+            "RestartSubscriptionBasedAutoresponders": False,
+        }
+        result = self._api_post(
+            f"/subscribers/{structure.list_id}/import.json",
+            payload,
+            expected_statuses=(201, 400),
+        )
+
+        failure_details = result.get("FailureDetails", []) if isinstance(result, dict) else []
+        failure_count = len(failure_details)
+        new_subscribers = int(result.get("TotalNewSubscribers", 0)) if isinstance(result, dict) else 0
+        existing_subscribers = int(result.get("TotalExistingSubscribers", 0)) if isinstance(result, dict) else 0
+
+        self._record_subscriber_sync_status(
+            list_id=structure.list_id,
+            submitted_count=len(subscribers),
+            failed_count=failure_count,
+        )
+
+        return CampaignMonitorSyncResult(
+            status="success" if failure_count == 0 else "warning",
+            detail=(
+                f"Submitted {len(subscribers)} subscribers to {self.settings.campaign_monitor_master_list_name}. "
+                f"New: {new_subscribers}. Existing updated: {existing_subscribers}. Failures: {failure_count}."
+            ),
+            list_id=structure.list_id,
+            submitted_count=len(subscribers),
+            new_subscribers=new_subscribers,
+            existing_subscribers=existing_subscribers,
+            failed_count=failure_count,
+        )
+
     def _record_status(self, sync_status: str) -> None:
         """Upsert the latest Campaign Monitor connection state into sync_targets."""
 
@@ -330,6 +448,127 @@ class CampaignMonitorService:
         """
         self.repository.execute_statement(query)
 
+    def _record_subscriber_sync_status(
+        self,
+        list_id: str,
+        submitted_count: int,
+        failed_count: int,
+    ) -> None:
+        """Upsert subscriber sync status into sync_targets for dashboard visibility."""
+
+        sync_status = "synced" if failed_count == 0 else "warning"
+        query = f"""
+        MERGE `{self.settings.sync_targets_table_fqn}` AS target
+        USING (
+          SELECT
+            'campaign_monitor' AS target_system,
+            'subscriber_sync' AS target_entity_type,
+            '{list_id}' AS target_entity_id,
+            'system' AS source_record_type,
+            'campaign_monitor_subscriber_sync' AS source_record_id,
+            '{sync_status}' AS sync_status
+        ) AS source
+        ON target.target_system = source.target_system
+           AND target.source_record_type = source.source_record_type
+           AND target.source_record_id = source.source_record_id
+        WHEN MATCHED THEN
+          UPDATE SET
+            target_entity_type = source.target_entity_type,
+            target_entity_id = source.target_entity_id,
+            sync_status = source.sync_status,
+            last_synced_at = CURRENT_TIMESTAMP(),
+            updated_at = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN
+          INSERT (
+            sync_target_id,
+            target_system,
+            target_entity_type,
+            target_entity_id,
+            source_record_type,
+            source_record_id,
+            sync_status,
+            last_synced_at,
+            created_at,
+            updated_at
+          )
+          VALUES (
+            GENERATE_UUID(),
+            source.target_system,
+            source.target_entity_type,
+            source.target_entity_id,
+            source.source_record_type,
+            source.source_record_id,
+            source.sync_status,
+            CURRENT_TIMESTAMP(),
+            CURRENT_TIMESTAMP(),
+            CURRENT_TIMESTAMP()
+          )
+        """
+        self.repository.execute_statement(query)
+
+    def _load_sync_candidates(self, limit: int) -> list[dict[str, str]]:
+        """Load deduped, marketing-ready subscribers from BigQuery."""
+
+        query = f"""
+        WITH ranked_contacts AS (
+          SELECT
+            pc.prospect_contact_id,
+            pc.email,
+            COALESCE(NULLIF(TRIM(pc.full_name), ''), CONCAT(COALESCE(pc.first_name, ''), ' ', COALESCE(pc.last_name, ''))) AS full_name,
+            COALESCE(NULLIF(TRIM(pc.role_family), ''), 'unclassified') AS role_family,
+            da.account_name AS dealer_name,
+            COALESCE(da.inferred_brand, 'Unknown') AS oem,
+            COALESCE(da.account_city, '') AS city,
+            COALESCE(da.account_state, '') AS state,
+            COALESCE(da.dealer_classification, '') AS dealer_classification,
+            COALESCE(pc.confidence_score, 0) AS confidence_score,
+            ROW_NUMBER() OVER (
+              PARTITION BY LOWER(pc.email)
+              ORDER BY COALESCE(pc.confidence_score, 0) DESC, pc.last_seen_at DESC NULLS LAST, pc.created_at DESC
+            ) AS row_number
+          FROM `{self.settings.prospect_contacts_table_fqn}` AS pc
+          JOIN `{self.settings.account_relationships_table_fqn}` AS ar
+            ON ar.prospect_contact_id = pc.prospect_contact_id
+          JOIN `{self.settings.dealer_accounts_table_fqn}` AS da
+            ON da.dealer_account_id = ar.dealer_account_id
+          WHERE da.dealer_classification IN ('dealer', 'dealer_group')
+            AND da.inferred_brand IS NOT NULL
+            AND TRIM(da.inferred_brand) != ''
+            AND pc.email IS NOT NULL
+            AND TRIM(pc.email) != ''
+            AND COALESCE(pc.is_personal_email, FALSE) = FALSE
+            AND LOWER(COALESCE(pc.contact_status, 'active')) NOT IN ('inactive', 'suppressed', 'invalid')
+        )
+        SELECT
+          email,
+          TRIM(full_name) AS full_name,
+          role_family,
+          dealer_name,
+          oem,
+          city,
+          state,
+          dealer_classification
+        FROM ranked_contacts
+        WHERE row_number = 1
+        ORDER BY oem ASC, dealer_name ASC, email ASC
+        LIMIT {int(limit)}
+        """
+        rows = self.repository.fetch_all(query)
+        return [
+            {
+                "email": str(row.get("email", "")).strip(),
+                "full_name": str(row.get("full_name", "") or "").strip(),
+                "role_family": str(row.get("role_family", "") or "").strip() or "unclassified",
+                "dealer_name": str(row.get("dealer_name", "") or "").strip(),
+                "oem": str(row.get("oem", "") or "").strip() or "Unknown",
+                "city": str(row.get("city", "") or "").strip(),
+                "state": str(row.get("state", "") or "").strip(),
+                "dealer_classification": str(row.get("dealer_classification", "") or "").strip(),
+            }
+            for row in rows
+            if row.get("email")
+        ]
+
     def _ensure_custom_fields(self, list_id: str, dry_run: bool) -> dict[str, str]:
         """Ensure required custom fields exist on the Campaign Monitor list."""
 
@@ -380,7 +619,12 @@ class CampaignMonitorService:
             return None
         return response.json()
 
-    def _api_post(self, path: str, payload: dict[str, Any]) -> Any:
+    def _api_post(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        expected_statuses: tuple[int, ...] = (200, 201),
+    ) -> Any:
         """Send a POST request to Campaign Monitor and return the decoded response."""
 
         response = requests.post(
@@ -389,7 +633,8 @@ class CampaignMonitorService:
             json=payload,
             timeout=self.settings.request_timeout_seconds,
         )
-        response.raise_for_status()
+        if response.status_code not in expected_statuses:
+            response.raise_for_status()
         if not response.text.strip():
             return None
         if response.headers.get("content-type", "").startswith("application/json"):

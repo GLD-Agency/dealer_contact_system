@@ -217,6 +217,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Preview the Campaign Monitor structure changes without creating anything.",
     )
 
+    campaign_monitor_sync_parser = subparsers.add_parser(
+        "sync-campaign-monitor",
+        help="Sync a deduped batch of subscribers into the Campaign Monitor master list.",
+    )
+    campaign_monitor_sync_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview the Campaign Monitor subscriber sync without sending data.",
+    )
+    campaign_monitor_sync_parser.add_argument(
+        "--limit",
+        type=int,
+        default=100,
+        help="Maximum number of subscribers to sync in one batch.",
+    )
+
     return parser
 
 
@@ -382,6 +398,31 @@ def main() -> None:
             print(f"Master list ID: {result.list_id}")
         print(f"Created segments: {result.created_segments}")
         print(f"Existing segments: {result.existing_segments}")
+        return
+
+    if args.command == "sync-campaign-monitor":
+        schema_manager.ensure_tables()
+        result = campaign_monitor_service.sync_subscribers(
+            dry_run=args.dry_run,
+            limit=args.limit,
+        )
+        logger.info(
+            "Campaign Monitor subscriber sync complete | status=%s | list_id=%s | submitted=%s | new=%s | existing=%s | failed=%s",
+            result.status,
+            result.list_id,
+            result.submitted_count,
+            result.new_subscribers,
+            result.existing_subscribers,
+            result.failed_count,
+        )
+        print(f"Campaign Monitor subscriber sync status: {result.status}")
+        print(result.detail)
+        if result.list_id:
+            print(f"Master list ID: {result.list_id}")
+        print(f"Submitted: {result.submitted_count}")
+        print(f"New subscribers: {result.new_subscribers}")
+        print(f"Existing subscribers updated: {result.existing_subscribers}")
+        print(f"Failures: {result.failed_count}")
         return
 
 

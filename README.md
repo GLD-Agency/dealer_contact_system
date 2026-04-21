@@ -179,6 +179,8 @@ python -m app check-campaign-monitor --dry-run
 python -m app check-campaign-monitor
 python -m app ensure-campaign-monitor-structure --dry-run
 python -m app ensure-campaign-monitor-structure
+python -m app sync-campaign-monitor --dry-run --limit 25
+python -m app sync-campaign-monitor --limit 100
 python -m app report
 python -m app serve-dashboard
 ```
@@ -211,6 +213,8 @@ python main.py check-campaign-monitor --dry-run
 python main.py check-campaign-monitor
 python main.py ensure-campaign-monitor-structure --dry-run
 python main.py ensure-campaign-monitor-structure
+python main.py sync-campaign-monitor --dry-run --limit 25
+python main.py sync-campaign-monitor --limit 100
 python main.py report
 python main.py serve-dashboard
 ```
