@@ -42,6 +42,27 @@ if ($env:CAMPAIGN_MONITOR_CLIENT_ID) {
 if ($env:CAMPAIGN_MONITOR_MASTER_LIST_NAME) {
     $envVars = "$envVars,CAMPAIGN_MONITOR_MASTER_LIST_NAME=$($env:CAMPAIGN_MONITOR_MASTER_LIST_NAME)"
 }
+if ($env:MANAGED_FETCH_ENABLED) {
+    $envVars = "$envVars,MANAGED_FETCH_ENABLED=$($env:MANAGED_FETCH_ENABLED)"
+}
+if ($env:MANAGED_FETCH_PROVIDER) {
+    $envVars = "$envVars,MANAGED_FETCH_PROVIDER=$($env:MANAGED_FETCH_PROVIDER)"
+}
+if ($env:MANAGED_FETCH_API_KEY) {
+    $envVars = "$envVars,MANAGED_FETCH_API_KEY=$($env:MANAGED_FETCH_API_KEY)"
+}
+if ($env:CLIENT_DIM_ENABLED) {
+    $envVars = "$envVars,CLIENT_DIM_ENABLED=$($env:CLIENT_DIM_ENABLED)"
+}
+if ($env:GLD_ACCOUNTABILITY_PROJECT_ID) {
+    $envVars = "$envVars,GLD_ACCOUNTABILITY_PROJECT_ID=$($env:GLD_ACCOUNTABILITY_PROJECT_ID)"
+}
+if ($env:CLIENT_DIM_DATASET) {
+    $envVars = "$envVars,CLIENT_DIM_DATASET=$($env:CLIENT_DIM_DATASET)"
+}
+if ($env:CLIENT_DIM_TABLE) {
+    $envVars = "$envVars,CLIENT_DIM_TABLE=$($env:CLIENT_DIM_TABLE)"
+}
 
 Write-Host "Ensuring Artifact Registry repository exists..."
 cmd /c "gcloud artifacts repositories describe $Repository --location=$Region --project=$ProjectId >nul 2>nul"

@@ -541,7 +541,34 @@ class CampaignMonitorService:
           audience_type,
           source_list,
           dealer_classification
-        FROM `{self.settings.activation_ready_contacts_view_fqn}`
+        FROM (
+          SELECT
+            email,
+            full_name,
+            role_family,
+            dealer_name,
+            oem,
+            city,
+            state,
+            phone_number,
+            country,
+            market,
+            audience_type,
+            source_list,
+            dealer_classification,
+            ROW_NUMBER() OVER (
+              PARTITION BY LOWER(email)
+              ORDER BY
+                marketing_ready_flag DESC,
+                current_client_override_flag DESC,
+                account_confidence_score DESC,
+                contact_confidence_score DESC,
+                updated_at DESC
+            ) AS row_number
+          FROM `{self.settings.prospect_leads_table_fqn}`
+          WHERE activation_status = 'activation_ready'
+        )
+        WHERE row_number = 1
         ORDER BY oem ASC, dealer_name ASC, email ASC
         LIMIT {int(limit)}
         """

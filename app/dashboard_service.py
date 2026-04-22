@@ -73,11 +73,15 @@ class DashboardService:
           validated_websites,
           enriched_websites,
           prospect_contacts,
+          prospect_leads,
           activation_ready_contacts,
           current_client_contacts,
           canada_contacts,
+          dim_matched_leads,
+          dim_suppressed_leads,
           website_extracted_contacts,
           blocked_fetch_accounts,
+          managed_fetch_eligible_accounts,
           queued_validate,
           queued_enrich,
           queued_extract,
@@ -100,11 +104,15 @@ class DashboardService:
           (SELECT COUNTIF(website_url IS NOT NULL AND TRIM(website_url) != '' AND dealer_classification IN ('dealer', 'dealer_group')) FROM `{self.settings.dealer_accounts_table_fqn}`),
           (SELECT COUNTIF(website_url IS NOT NULL AND TRIM(website_url) != '') FROM `{self.settings.dealer_accounts_table_fqn}`),
           (SELECT COUNT(*) FROM `{self.settings.prospect_contacts_table_fqn}`),
+          (SELECT COUNT(*) FROM `{self.settings.prospect_leads_table_fqn}`),
           (SELECT COUNT(*) FROM `{self.settings.activation_ready_contacts_view_fqn}`),
           (SELECT COUNTIF(audience_type = 'current_client') FROM `{self.settings.prospect_contacts_table_fqn}`),
           (SELECT COUNTIF(country = 'Canada') FROM `{self.settings.prospect_contacts_table_fqn}`),
+          (SELECT COUNTIF(dim_client_match_flag) FROM `{self.settings.prospect_leads_table_fqn}`),
+          (SELECT COUNTIF(NOT prospecting_allowed_flag) FROM `{self.settings.prospect_leads_table_fqn}`),
           (SELECT COUNTIF(source_type = 'website_contact_extraction') FROM `{self.settings.prospect_contacts_table_fqn}`),
           (SELECT COUNTIF(fetch_status = 'blocked' AND dealer_classification IN ('dealer', 'dealer_group')) FROM `{self.settings.dealer_accounts_table_fqn}`),
+          (SELECT COUNTIF(managed_fetch_status = 'eligible') FROM `{self.settings.dealer_accounts_table_fqn}`),
           (SELECT COUNTIF(task_type = 'validate' AND status IN ('pending', 'retry')) FROM `{self.settings.account_work_queue_table_fqn}`),
           (SELECT COUNTIF(task_type = 'enrich' AND status IN ('pending', 'retry')) FROM `{self.settings.account_work_queue_table_fqn}`),
           (SELECT COUNTIF(task_type = 'extract_contacts' AND status IN ('pending', 'retry')) FROM `{self.settings.account_work_queue_table_fqn}`),
@@ -131,9 +139,12 @@ class DashboardService:
           (SELECT COUNTIF(website_url IS NOT NULL AND TRIM(website_url) != '') FROM `{self.settings.dealer_accounts_table_fqn}`) AS enriched_websites,
           (SELECT COUNTIF(website_url IS NOT NULL AND TRIM(website_url) != '' AND dealer_classification IN ('dealer', 'dealer_group')) FROM `{self.settings.dealer_accounts_table_fqn}`) AS validated_websites,
           (SELECT COUNT(*) FROM `{self.settings.prospect_contacts_table_fqn}`) AS prospect_contacts,
+          (SELECT COUNT(*) FROM `{self.settings.prospect_leads_table_fqn}`) AS prospect_leads,
           (SELECT COUNT(*) FROM `{self.settings.activation_ready_contacts_view_fqn}`) AS activation_ready_contacts,
           (SELECT COUNTIF(audience_type = 'current_client') FROM `{self.settings.prospect_contacts_table_fqn}`) AS current_client_contacts,
           (SELECT COUNTIF(country = 'Canada') FROM `{self.settings.prospect_contacts_table_fqn}`) AS canada_contacts,
+          (SELECT COUNTIF(dim_client_match_flag) FROM `{self.settings.prospect_leads_table_fqn}`) AS dim_matched_leads,
+          (SELECT COUNTIF(NOT prospecting_allowed_flag) FROM `{self.settings.prospect_leads_table_fqn}`) AS dim_suppressed_leads,
           (SELECT COUNTIF(source_type = 'website_contact_extraction') FROM `{self.settings.prospect_contacts_table_fqn}`) AS website_extracted_contacts,
           (SELECT COUNT(*) FROM `{self.settings.pipeline_runs_table_fqn}`) AS pipeline_runs,
           (SELECT COUNTIF(task_type = 'validate' AND status IN ('pending', 'retry')) FROM `{self.settings.account_work_queue_table_fqn}`) AS queued_validate,
@@ -141,7 +152,8 @@ class DashboardService:
           (SELECT COUNTIF(task_type = 'extract_contacts' AND status IN ('pending', 'retry')) FROM `{self.settings.account_work_queue_table_fqn}`) AS queued_extract,
           (SELECT COUNTIF(task_type = 'retry_blocked' AND status IN ('pending', 'retry')) FROM `{self.settings.account_work_queue_table_fqn}`) AS queued_retry_blocked,
           (SELECT COUNTIF(status = 'in_progress') FROM `{self.settings.account_work_queue_table_fqn}`) AS queue_in_progress,
-          (SELECT COUNTIF(fetch_status = 'blocked' AND dealer_classification IN ('dealer', 'dealer_group')) FROM `{self.settings.dealer_accounts_table_fqn}`) AS blocked_fetch_accounts
+          (SELECT COUNTIF(fetch_status = 'blocked' AND dealer_classification IN ('dealer', 'dealer_group')) FROM `{self.settings.dealer_accounts_table_fqn}`) AS blocked_fetch_accounts,
+          (SELECT COUNTIF(managed_fetch_status = 'eligible') FROM `{self.settings.dealer_accounts_table_fqn}`) AS managed_fetch_eligible_accounts
         """
         return self.repository.fetch_one(query)
 
@@ -164,11 +176,15 @@ class DashboardService:
           validated_websites,
           enriched_websites,
           prospect_contacts,
+          prospect_leads,
           activation_ready_contacts,
           current_client_contacts,
           canada_contacts,
+          dim_matched_leads,
+          dim_suppressed_leads,
           website_extracted_contacts,
           blocked_fetch_accounts,
+          managed_fetch_eligible_accounts,
           queued_validate,
           queued_enrich,
           queued_extract,
@@ -198,11 +214,15 @@ class DashboardService:
           validated_websites,
           enriched_websites,
           prospect_contacts,
+          prospect_leads,
           activation_ready_contacts,
           current_client_contacts,
           canada_contacts,
+          dim_matched_leads,
+          dim_suppressed_leads,
           website_extracted_contacts,
           blocked_fetch_accounts,
+          managed_fetch_eligible_accounts,
           queued_validate,
           queued_enrich,
           queued_extract,
@@ -230,11 +250,15 @@ class DashboardService:
           sales_ready_leads,
           validated_websites,
           enriched_websites,
+          prospect_leads,
           activation_ready_contacts,
           current_client_contacts,
           canada_contacts,
+          dim_matched_leads,
+          dim_suppressed_leads,
           website_extracted_contacts,
-          blocked_fetch_accounts
+          blocked_fetch_accounts,
+          managed_fetch_eligible_accounts
         FROM `{self.settings.dashboard_snapshots_table_fqn}`
         ORDER BY snapshot_at DESC
         LIMIT 10
@@ -255,6 +279,7 @@ class DashboardService:
             "accounts_with_website_phone": "Accounts With Website Phone",
             "accounts_with_gbp_phone": "Accounts With GBP Phone",
             "activation_ready_accounts": "Activation-Ready Accounts",
+            "prospect_leads": "Prospect Leads",
             "marketing_ready_contacts": "Marketing-Ready Contacts",
             "sales_ready_leads": "Sales-Ready Leads",
             "validated_websites": "Website-Ready Dealers",
@@ -262,8 +287,11 @@ class DashboardService:
             "activation_ready_contacts": "Activation-Ready Contacts",
             "current_client_contacts": "Current Clients",
             "canada_contacts": "Canada Contacts",
+            "dim_matched_leads": "DIM Matched Leads",
+            "dim_suppressed_leads": "Suppressed Leads",
             "website_extracted_contacts": "Website Contacts",
             "blocked_fetch_accounts": "Blocked Dealer Sites",
+            "managed_fetch_eligible_accounts": "Managed Fetch Eligible",
         }
         if not latest_snapshot:
             return {
@@ -305,11 +333,15 @@ class DashboardService:
             ("accounts_with_gbp_phone", "GBP Phone Coverage"),
             ("marketing_ready_contacts", "Marketing-Ready Contacts"),
             ("sales_ready_leads", "Sales-Ready Leads"),
+            ("prospect_leads", "Prospect Leads"),
             ("activation_ready_contacts", "Activation-Ready Contacts"),
             ("current_client_contacts", "Current Clients"),
             ("canada_contacts", "Canada Contacts"),
+            ("dim_matched_leads", "DIM Matched Leads"),
+            ("dim_suppressed_leads", "Suppressed Leads"),
             ("website_extracted_contacts", "Website Contacts"),
             ("blocked_fetch_accounts", "Blocked Dealer Sites"),
+            ("managed_fetch_eligible_accounts", "Managed Fetch Eligible"),
         ]
         if not trend_rows:
             return []
@@ -363,6 +395,7 @@ class DashboardService:
     def _get_connections(self, overview: dict[str, Any]) -> list[DashboardConnectionStatus]:
         """Create human-readable system health rows."""
 
+        system_statuses = self._get_named_system_statuses(("client_dim", "managed_fetch"))
         return [
             DashboardConnectionStatus(
                 name="BigQuery",
@@ -383,6 +416,24 @@ class DashboardService:
                 name="Blocked-Site Retry",
                 status="warning" if int(overview.get("blocked_fetch_accounts", 0)) > 0 else "healthy",
                 detail=f"{int(overview.get('blocked_fetch_accounts', 0)):,} dealer sites still blocked or challenged",
+            ),
+            self._system_status_row(
+                name="Client DIM",
+                sync_row=system_statuses.get("client_dim"),
+                fallback_status="warning",
+                fallback_detail=(
+                    "Configured for future client-suppression matching."
+                    if self.settings.client_dim_enabled
+                    else "Client DIM integration is not configured yet."
+                ),
+            ),
+            self._system_status_row(
+                name="Managed Fetch",
+                sync_row=system_statuses.get("managed_fetch"),
+                fallback_status="warning" if int(overview.get("managed_fetch_eligible_accounts", 0)) > 0 else "healthy",
+                fallback_detail=(
+                    f"{int(overview.get('managed_fetch_eligible_accounts', 0)):,} hard blocked sites are eligible for escalation."
+                ),
             ),
         ]
 
@@ -487,6 +538,61 @@ class DashboardService:
         """
         rows = self.repository.fetch_all(query)
         return {str(row["target_system"]): row for row in rows}
+
+    def _get_named_system_statuses(self, systems: tuple[str, ...]) -> dict[str, dict[str, Any]]:
+        """Return the latest sync row for each requested system."""
+
+        if not systems:
+            return {}
+        systems_sql = ", ".join(f"'{system}'" for system in systems)
+        query = f"""
+        SELECT
+          target_system,
+          sync_status,
+          last_synced_at
+        FROM (
+          SELECT
+            target_system,
+            sync_status,
+            last_synced_at,
+            ROW_NUMBER() OVER (
+              PARTITION BY target_system
+              ORDER BY last_synced_at DESC NULLS LAST, updated_at DESC NULLS LAST, created_at DESC
+            ) AS row_number
+          FROM `{self.settings.sync_targets_table_fqn}`
+          WHERE target_system IN ({systems_sql})
+        )
+        WHERE row_number = 1
+        """
+        rows = self.repository.fetch_all(query)
+        return {str(row["target_system"]): row for row in rows}
+
+    def _system_status_row(
+        self,
+        name: str,
+        sync_row: dict[str, Any] | None,
+        fallback_status: str,
+        fallback_detail: str,
+    ) -> DashboardConnectionStatus:
+        """Convert one latest-system-status row into a dashboard connection row."""
+
+        if not sync_row:
+            return DashboardConnectionStatus(name=name, status=fallback_status, detail=fallback_detail)
+
+        sync_status = str(sync_row.get("sync_status") or "unknown").lower()
+        last_synced_at = sync_row.get("last_synced_at")
+        detail = f"Latest status: {sync_status}"
+        if last_synced_at:
+            detail += f" at {last_synced_at}"
+        if sync_status in {"synced", "success", "completed", "configured"}:
+            status = "healthy"
+        elif sync_status in {"failed", "error"}:
+            status = "error"
+        elif sync_status in {"warning"}:
+            status = "warning"
+        else:
+            status = fallback_status
+        return DashboardConnectionStatus(name=name, status=status, detail=detail)
 
     def _get_classification_counts(self) -> list[dict[str, Any]]:
         """Return account counts by dealer classification."""
@@ -594,6 +700,7 @@ class DashboardService:
           inferred_brand,
           blocked_reason,
           blocked_attempt_count,
+          managed_fetch_status,
           last_fetch_attempt_at
         FROM `{self.settings.dealer_accounts_table_fqn}`
         WHERE dealer_classification IN ('dealer', 'dealer_group')

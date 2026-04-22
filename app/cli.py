@@ -15,12 +15,15 @@ from app.source_catalog import SOURCE_FEEDS
 from app.services.account_enrichment import AccountEnrichmentService
 from app.services.browser_retry import BrowserRetryService
 from app.services.campaign_monitor import CampaignMonitorService
+from app.services.client_dim import ClientDimService
 from app.services.contact_extraction import ContactExtractionService
 from app.services.dealer_validation import DealerValidationService
 from app.services.external_seed_import import ExternalSeedImportService
 from app.services.external_seed_promotion import ExternalSeedPromotionService
 from app.services.low_risk_enrichment import LowRiskEnrichmentService
+from app.services.managed_fetch import ManagedFetchService
 from app.services.normalization import NormalizationService
+from app.services.prospect_leads import ProspectLeadService
 from app.services.work_queue import TASK_TYPES, WorkQueueService
 
 
@@ -231,6 +234,33 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Preview low-risk enrichment counts without writing any updates.",
     )
+    prospect_leads_parser = subparsers.add_parser(
+        "refresh-prospect-leads",
+        help="Refresh the materialized prospect lead table from canonical data.",
+    )
+    prospect_leads_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview the prospect lead refresh without rebuilding the table.",
+    )
+    client_dim_parser = subparsers.add_parser(
+        "refresh-client-dim",
+        help="Refresh client DIM matches and suppression flags into the prospect lead table.",
+    )
+    client_dim_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview the client DIM refresh without writing suppression updates.",
+    )
+    managed_fetch_parser = subparsers.add_parser(
+        "refresh-managed-fetch",
+        help="Mark hard blocked dealer sites as eligible for managed anti-bot escalation.",
+    )
+    managed_fetch_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview managed-fetch eligibility without writing escalation state.",
+    )
 
     campaign_monitor_parser = subparsers.add_parser(
         "check-campaign-monitor",
@@ -292,6 +322,9 @@ def main() -> None:
     external_seed_import_service = ExternalSeedImportService(repository, settings)
     external_seed_promotion_service = ExternalSeedPromotionService(repository, settings)
     low_risk_enrichment_service = LowRiskEnrichmentService(repository, settings)
+    prospect_lead_service = ProspectLeadService(repository, settings)
+    client_dim_service = ClientDimService(repository, settings)
+    managed_fetch_service = ManagedFetchService(repository, settings)
 
     logger.info(
         "Starting command | environment=%s | project=%s | dataset=%s | command=%s",
@@ -377,14 +410,11 @@ def main() -> None:
             batch_size=settings.validate_worker_batch_size,
             dry_run=args.dry_run,
         )
+        if not args.dry_run:
+            low_risk_enrichment_service.run(dry_run=False)
         work_queue_service.run_worker(
             task_type="enrich",
             batch_size=settings.enrich_worker_batch_size,
-            dry_run=args.dry_run,
-        )
-        work_queue_service.run_worker(
-            task_type="extract_contacts",
-            batch_size=settings.extract_worker_batch_size,
             dry_run=args.dry_run,
         )
         work_queue_service.run_worker(
@@ -393,6 +423,15 @@ def main() -> None:
             dry_run=args.dry_run,
         )
         if not args.dry_run:
+            managed_fetch_service.refresh(dry_run=False)
+        work_queue_service.run_worker(
+            task_type="extract_contacts",
+            batch_size=settings.extract_worker_batch_size,
+            dry_run=args.dry_run,
+        )
+        if not args.dry_run:
+            prospect_lead_service.refresh(dry_run=False)
+            client_dim_service.refresh(dry_run=False)
             dashboard_service.capture_snapshot()
             campaign_monitor_service.check_connection(dry_run=False)
             if settings.campaign_monitor_sync_enabled:
@@ -468,6 +507,45 @@ def main() -> None:
         schema_manager.ensure_tables()
         low_risk_enrichment_service.run(dry_run=args.dry_run)
         logger.info("Low-risk enrichment command complete.")
+        return
+
+    if args.command == "refresh-prospect-leads":
+        schema_manager.ensure_tables()
+        result = prospect_lead_service.refresh(dry_run=args.dry_run)
+        logger.info("Prospect lead refresh complete | status=%s | detail=%s", result.status, result.detail)
+        print(f"Prospect leads status: {result.status}")
+        print(result.detail)
+        print(f"Lead rows: {result.lead_count}")
+        return
+
+    if args.command == "refresh-client-dim":
+        schema_manager.ensure_tables()
+        result = client_dim_service.refresh(dry_run=args.dry_run)
+        logger.info(
+            "Client DIM refresh complete | status=%s | matched=%s | suppressed=%s | detail=%s",
+            result.status,
+            result.matched_leads,
+            result.suppressed_leads,
+            result.detail,
+        )
+        print(f"Client DIM status: {result.status}")
+        print(result.detail)
+        print(f"Matched leads: {result.matched_leads}")
+        print(f"Suppressed leads: {result.suppressed_leads}")
+        return
+
+    if args.command == "refresh-managed-fetch":
+        schema_manager.ensure_tables()
+        result = managed_fetch_service.refresh(dry_run=args.dry_run)
+        logger.info(
+            "Managed fetch refresh complete | status=%s | eligible=%s | detail=%s",
+            result.status,
+            result.eligible_accounts,
+            result.detail,
+        )
+        print(f"Managed fetch status: {result.status}")
+        print(result.detail)
+        print(f"Eligible accounts: {result.eligible_accounts}")
         return
 
     if args.command == "check-campaign-monitor":
@@ -562,10 +640,14 @@ def print_report(repository: BigQueryRepository, settings: Settings) -> None:
       (SELECT COUNTIF(dealer_classification = 'oem') FROM `{settings.dealer_accounts_table_fqn}`) AS validated_oems,
       (SELECT COUNTIF(dealer_classification = 'unknown') FROM `{settings.dealer_accounts_table_fqn}`) AS validated_unknowns,
       (SELECT COUNT(*) FROM `{settings.prospect_contacts_table_fqn}`) AS prospect_contacts,
+      (SELECT COUNT(*) FROM `{settings.prospect_leads_table_fqn}`) AS prospect_leads,
       (SELECT COUNT(*) FROM `{settings.activation_ready_contacts_view_fqn}`) AS activation_ready_contacts,
       (SELECT COUNTIF(audience_type = 'current_client') FROM `{settings.prospect_contacts_table_fqn}`) AS current_client_contacts,
       (SELECT COUNTIF(country = 'Canada') FROM `{settings.prospect_contacts_table_fqn}`) AS canada_contacts,
+      (SELECT COUNTIF(dim_client_match_flag) FROM `{settings.prospect_leads_table_fqn}`) AS dim_matched_leads,
+      (SELECT COUNTIF(NOT prospecting_allowed_flag) FROM `{settings.prospect_leads_table_fqn}`) AS dim_suppressed_leads,
       (SELECT COUNTIF(source_type = 'website_contact_extraction') FROM `{settings.prospect_contacts_table_fqn}`) AS website_extracted_contacts,
+      (SELECT COUNTIF(managed_fetch_status = 'eligible') FROM `{settings.dealer_accounts_table_fqn}`) AS managed_fetch_eligible_accounts,
       (SELECT COUNT(*) FROM `{settings.account_relationships_table_fqn}`) AS account_relationships,
       (SELECT COUNT(*) FROM `{settings.sync_targets_table_fqn}`) AS sync_targets,
       (SELECT COUNTIF(task_type = 'validate' AND status IN ('pending', 'retry')) FROM `{settings.account_work_queue_table_fqn}`) AS queued_validate,
@@ -605,10 +687,14 @@ def print_report(repository: BigQueryRepository, settings: Settings) -> None:
     print(f"Validated OEMs: {report.get('validated_oems', 0)}")
     print(f"Validated unknowns: {report.get('validated_unknowns', 0)}")
     print(f"Prospect contacts: {report.get('prospect_contacts', 0)}")
+    print(f"Prospect leads: {report.get('prospect_leads', 0)}")
     print(f"Activation-ready contacts: {report.get('activation_ready_contacts', 0)}")
     print(f"Current-client contacts: {report.get('current_client_contacts', 0)}")
     print(f"Canada contacts: {report.get('canada_contacts', 0)}")
+    print(f"Client DIM matched leads: {report.get('dim_matched_leads', 0)}")
+    print(f"Suppressed leads: {report.get('dim_suppressed_leads', 0)}")
     print(f"Website-extracted contacts: {report.get('website_extracted_contacts', 0)}")
+    print(f"Managed fetch eligible accounts: {report.get('managed_fetch_eligible_accounts', 0)}")
     print(f"Account relationships: {report.get('account_relationships', 0)}")
     print(f"Sync targets: {report.get('sync_targets', 0)}")
     print(f"Queued validate tasks: {report.get('queued_validate', 0)}")

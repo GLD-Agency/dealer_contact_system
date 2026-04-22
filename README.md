@@ -17,10 +17,13 @@ Phase 2 foundation for a dealer contact pipeline that uses BigQuery as the sourc
 - A pipeline run log for resumable worker execution and future scheduling
 - A one-page dashboard UI for status, health, brand mix, queue status, and recent runs
 - Automatic dashboard snapshots so the UI can show before/after deltas and trend history
+- A materialized `prospect_leads` table for downstream activation and exports
+- A client DIM integration scaffold for suppression and ownership mapping
+- Managed-fetch escalation tracking for persistent blocked Dealer Inspire / Cloudflare sites
 - CLI commands for setup, normalize, and report
 - Helper scripts for connection checks and operational entry points
 
-This version does not add crawling, multi-agent orchestration, Campaign Monitor sync, or Airtable sync yet.
+This version includes Campaign Monitor sync and prospect lead materialization. Meta, Google Ads, and live managed anti-bot provider execution are still scaffolded rather than fully activated.
 
 ## Current Data Flow
 
@@ -130,6 +133,8 @@ gcloud auth application-default login
 - `ACCOUNT_WORK_QUEUE_TABLE`: BigQuery work queue table for brute-force workers
 - `PIPELINE_RUNS_TABLE`: BigQuery run log for worker execution
 - `DASHBOARD_SNAPSHOTS_TABLE`: BigQuery snapshot table for dashboard trend history
+- `EXTERNAL_SEED_CONTACTS_TABLE`: Landing table for one-time imported CSV seeds
+- `PROSPECT_LEADS_TABLE`: Materialized downstream prospect database table
 - `MARKETING_READY_CONTACTS_VIEW`: BigQuery view used for activation-safe marketing syncs
 - `SALES_READY_LEADS_VIEW`: BigQuery view used for tighter outbound sales lead review
 - `WORKER_BATCH_SIZE`: Default account batch size for queue-driven workers
@@ -140,6 +145,11 @@ gcloud auth application-default login
 - `RETRY_BLOCKED_WORKER_BATCH_SIZE`: Batch size for one queue-cycle blocked-site retry step
 - `CAMPAIGN_MONITOR_SYNC_BATCH_SIZE`: Subscriber batch size for one Campaign Monitor sync step
 - `CAMPAIGN_MONITOR_SYNC_ENABLED`: Whether the queue cycle should push subscribers into Campaign Monitor
+- `MANAGED_FETCH_ENABLED`: Whether the hard-blocked managed escalation lane is configured
+- `MANAGED_FETCH_PROVIDER`: Label for the anti-bot provider being used or planned
+- `MANAGED_FETCH_MIN_BLOCKED_ATTEMPTS`: Blocked-attempt threshold before escalation eligibility
+- `MANAGED_FETCH_COOLDOWN_HOURS`: Cooldown before re-flagging the same blocked site
+- `CLIENT_DIM_*`: Cross-project BigQuery configuration for client suppression and ownership mapping
 - `CLOUD_RUN_REGION`: Target region for Cloud Run jobs
 - `BROWSER_TIMEOUT_SECONDS`: Timeout for browser-backed blocked-site retries
 - `BLOCKED_RETRY_SHORT_COOLDOWN_HOURS`: Cooldown after the first blocked-site attempts
@@ -179,6 +189,12 @@ python -m app run-worker --task-type retry_blocked --batch-size 10
 python -m app run-queue-cycle --seed --dry-run
 python -m app run-queue-cycle --seed
 python -m app capture-dashboard-snapshot
+python -m app refresh-prospect-leads --dry-run
+python -m app refresh-prospect-leads
+python -m app refresh-client-dim --dry-run
+python -m app refresh-client-dim
+python -m app refresh-managed-fetch --dry-run
+python -m app refresh-managed-fetch
 python -m app check-campaign-monitor --dry-run
 python -m app check-campaign-monitor
 python -m app ensure-campaign-monitor-structure --dry-run
@@ -213,6 +229,12 @@ python main.py run-worker --task-type retry_blocked --batch-size 10
 python main.py run-queue-cycle --seed --dry-run
 python main.py run-queue-cycle --seed
 python main.py capture-dashboard-snapshot
+python main.py refresh-prospect-leads --dry-run
+python main.py refresh-prospect-leads
+python main.py refresh-client-dim --dry-run
+python main.py refresh-client-dim
+python main.py refresh-managed-fetch --dry-run
+python main.py refresh-managed-fetch
 python main.py check-campaign-monitor --dry-run
 python main.py check-campaign-monitor
 python main.py ensure-campaign-monitor-structure --dry-run
@@ -491,9 +513,15 @@ The setup command also creates two downstream activation views:
 - `marketing_ready_contacts`
 - `sales_ready_leads`
 
+It also creates a materialized downstream activation table:
+
+- `prospect_leads`
+
 `marketing_ready_contacts` is the formal activation layer for downstream systems like Campaign Monitor. It dedupes business-email contacts that are safe to use now, even when deeper crawl enrichment is still pending.
 
 `sales_ready_leads` is the tighter lead view for outreach workflows. It excludes current clients and focuses on validated `dealer` and `dealer_group` accounts.
+
+`prospect_leads` is the stable BigQuery prospect database for downstream tools. It carries canonical account/contact context, readiness flags, phone-source lineage, Canada/current-client segmentation, and DIM suppression fields.
 
 The normalization pipeline uses stable SHA256-based IDs to support safe reruns:
 

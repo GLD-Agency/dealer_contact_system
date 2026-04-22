@@ -169,6 +169,10 @@
               <strong>{{ "{:,}".format(data.overview.prospect_contacts or 0) }}</strong>
             </div>
             <div class="metric-row">
+              <span>Prospect Leads</span>
+              <strong>{{ "{:,}".format(data.overview.prospect_leads or 0) }}</strong>
+            </div>
+            <div class="metric-row">
               <span>Activation-Ready Accounts</span>
               <strong>{{ "{:,}".format(data.overview.activation_ready_accounts or 0) }}</strong>
             </div>
@@ -205,8 +209,20 @@
               <strong>{{ "{:,}".format(data.overview.canada_contacts or 0) }}</strong>
             </div>
             <div class="metric-row">
+              <span>DIM Matched Leads</span>
+              <strong>{{ "{:,}".format(data.overview.dim_matched_leads or 0) }}</strong>
+            </div>
+            <div class="metric-row">
+              <span>Suppressed Leads</span>
+              <strong>{{ "{:,}".format(data.overview.dim_suppressed_leads or 0) }}</strong>
+            </div>
+            <div class="metric-row">
               <span>Pipeline Runs Logged</span>
               <strong>{{ "{:,}".format(data.overview.pipeline_runs or 0) }}</strong>
+            </div>
+            <div class="metric-row">
+              <span>Managed Fetch Eligible</span>
+              <strong>{{ "{:,}".format(data.overview.managed_fetch_eligible_accounts or 0) }}</strong>
             </div>
           </div>
         </article>
@@ -351,6 +367,7 @@
               <th>Website</th>
               <th>Blocked Reason</th>
               <th>Attempts</th>
+              <th>Managed Fetch</th>
             </tr>
           </thead>
           <tbody>
@@ -367,6 +384,7 @@
               </td>
               <td>{{ row.blocked_reason or "-" }}</td>
               <td>{{ "{:,}".format(row.blocked_attempt_count or 0) }}</td>
+              <td>{{ row.managed_fetch_status or "-" }}</td>
             </tr>
             {% endfor %}
           </tbody>
