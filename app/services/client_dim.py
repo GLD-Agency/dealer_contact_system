@@ -1,4 +1,4 @@
-"""Integrate a client DIM table as suppression and ownership authority."""
+"""Integrate the client DIM table as suppression and ownership authority."""
 
 from __future__ import annotations
 
@@ -65,8 +65,8 @@ class ClientDimService:
 
         if dry_run:
             detail = (
-              "Would refresh client DIM matches. "
-              f"Matched leads: {matched_leads:,}. Suppressed leads: {suppressed_leads:,}."
+                "Would refresh client DIM matches. "
+                f"Matched leads: {matched_leads:,}. Suppressed leads: {suppressed_leads:,}."
             )
             return ClientDimRefreshResult("preview", detail, matched_leads, suppressed_leads)
 
@@ -100,60 +100,90 @@ class ClientDimService:
         return f"""
         WITH client_dim AS (
           SELECT
-            LOWER(TRIM(CAST({self.settings.client_dim_client_id_column} AS STRING))) AS dim_client_id,
-            NULLIF(TRIM(CAST({self.settings.client_dim_account_owner_column} AS STRING)), '') AS dim_account_owner,
-            NULLIF(LOWER(TRIM(CAST({self.settings.client_dim_account_key_column} AS STRING))), '') AS dim_account_key,
-            NULLIF(LOWER(TRIM(CAST({self.settings.client_dim_domain_column} AS STRING))), '') AS dim_domain,
-            NULLIF(LOWER(TRIM(CAST({self.settings.client_dim_name_column} AS STRING))), '') AS dim_name,
-            NULLIF(LOWER(TRIM(CAST({self.settings.client_dim_city_column} AS STRING))), '') AS dim_city,
-            NULLIF(LOWER(TRIM(CAST({self.settings.client_dim_state_column} AS STRING))), '') AS dim_state,
-            NULLIF(LOWER(TRIM(CAST({self.settings.client_dim_email_domain_column} AS STRING))), '') AS dim_email_domain,
-            NULLIF(LOWER(TRIM(CAST({self.settings.client_dim_email_column} AS STRING))), '') AS dim_email,
-            CASE
-              WHEN LOWER(TRIM(CAST({self.settings.client_dim_current_client_flag_column} AS STRING))) IN ('true', '1', 'yes', 'y') THEN TRUE
-              WHEN LOWER(TRIM(CAST({self.settings.client_dim_current_client_flag_column} AS STRING))) IN ('false', '0', 'no', 'n') THEN FALSE
-              ELSE TRUE
-            END AS current_client_flag
+            LOWER(TRIM(client_key)) AS dim_client_id,
+            NULLIF(TRIM(client_name), '') AS client_name,
+            NULLIF(LOWER(TRIM(normalized_client_name)), '') AS normalized_client_name,
+            active_flag,
+            source_aliases,
+            COALESCE(
+              (
+                SELECT REGEXP_EXTRACT(alias, r'^assignment:account_manager:(.+)$')
+                FROM UNNEST(source_aliases) AS alias
+                WHERE STARTS_WITH(alias, 'assignment:account_manager:')
+                LIMIT 1
+              ),
+              (
+                SELECT REGEXP_EXTRACT(alias, r'^assignment:account_coordinator:(.+)$')
+                FROM UNNEST(source_aliases) AS alias
+                WHERE STARTS_WITH(alias, 'assignment:account_coordinator:')
+                LIMIT 1
+              )
+            ) AS dim_account_owner
           FROM `{client_dim_table}`
+        ),
+        client_dim_match_keys AS (
+          SELECT
+            dim_client_id,
+            dim_account_owner,
+            active_flag,
+            normalized_client_name AS match_key,
+            1 AS match_rank
+          FROM client_dim
+          WHERE normalized_client_name IS NOT NULL
+          UNION ALL
+          SELECT
+            dim_client_id,
+            dim_account_owner,
+            active_flag,
+            REGEXP_EXTRACT(alias, r'^airtable_name:(.+)$') AS match_key,
+            2 AS match_rank
+          FROM client_dim, UNNEST(source_aliases) AS alias
+          WHERE STARTS_WITH(alias, 'airtable_name:')
+          UNION ALL
+          SELECT
+            dim_client_id,
+            dim_account_owner,
+            active_flag,
+            REGEXP_EXTRACT(alias, r'^observed_name:(.+)$') AS match_key,
+            3 AS match_rank
+          FROM client_dim, UNNEST(source_aliases) AS alias
+          WHERE STARTS_WITH(alias, 'observed_name:')
+        ),
+        lead_candidates AS (
+          SELECT
+            prospect_lead_id,
+            email,
+            email_domain,
+            account_key,
+            dealer_name,
+            LOWER(
+              TRIM(
+                REGEXP_REPLACE(
+                  COALESCE(dealer_name, ''),
+                  r'[^a-zA-Z0-9]+',
+                  ' '
+                )
+              )
+            ) AS normalized_dealer_name
+          FROM `{self.settings.prospect_leads_table_fqn}`
         ),
         ranked_matches AS (
           SELECT
-            pl.prospect_lead_id,
+            lc.prospect_lead_id,
+            ck.active_flag,
             ROW_NUMBER() OVER (
-              PARTITION BY pl.prospect_lead_id
+              PARTITION BY lc.prospect_lead_id
               ORDER BY
-                CASE
-                  WHEN cd.dim_account_key IS NOT NULL AND cd.dim_account_key = LOWER(pl.account_key) THEN 1
-                  WHEN cd.dim_domain IS NOT NULL AND cd.dim_domain = LOWER(pl.account_key) THEN 1
-                  WHEN cd.dim_name IS NOT NULL
-                       AND cd.dim_name = LOWER(pl.dealer_name)
-                       AND COALESCE(cd.dim_city, '') = COALESCE(LOWER(pl.city), '')
-                       AND COALESCE(cd.dim_state, '') = COALESCE(LOWER(pl.state), '') THEN 2
-                  WHEN cd.dim_email_domain IS NOT NULL AND cd.dim_email_domain = LOWER(pl.email_domain) THEN 3
-                  WHEN cd.dim_email IS NOT NULL AND cd.dim_email = LOWER(pl.email) THEN 4
-                  ELSE 9
-                END,
-                cd.dim_client_id
-            ) AS row_number,
-            cd.current_client_flag
-          FROM `{self.settings.prospect_leads_table_fqn}` AS pl
-          JOIN client_dim AS cd
-            ON (
-              (cd.dim_account_key IS NOT NULL AND cd.dim_account_key = LOWER(pl.account_key))
-              OR (cd.dim_domain IS NOT NULL AND cd.dim_domain = LOWER(pl.account_key))
-              OR (
-                cd.dim_name IS NOT NULL
-                AND cd.dim_name = LOWER(pl.dealer_name)
-                AND COALESCE(cd.dim_city, '') = COALESCE(LOWER(pl.city), '')
-                AND COALESCE(cd.dim_state, '') = COALESCE(LOWER(pl.state), '')
-              )
-              OR (cd.dim_email_domain IS NOT NULL AND cd.dim_email_domain = LOWER(pl.email_domain))
-              OR (cd.dim_email IS NOT NULL AND cd.dim_email = LOWER(pl.email))
-            )
+                ck.match_rank,
+                ck.dim_client_id
+            ) AS row_number
+          FROM lead_candidates AS lc
+          JOIN client_dim_match_keys AS ck
+            ON ck.match_key = lc.normalized_dealer_name
         )
         SELECT
           COUNTIF(row_number = 1) AS matched_leads,
-          COUNTIF(row_number = 1 AND current_client_flag) AS suppressed_leads
+          COUNTIF(row_number = 1 AND active_flag) AS suppressed_leads
         FROM ranked_matches
         """
 
@@ -165,64 +195,91 @@ class ClientDimService:
         USING (
           WITH client_dim AS (
             SELECT
-              LOWER(TRIM(CAST({self.settings.client_dim_client_id_column} AS STRING))) AS dim_client_id,
-              NULLIF(TRIM(CAST({self.settings.client_dim_account_owner_column} AS STRING)), '') AS dim_account_owner,
-              NULLIF(LOWER(TRIM(CAST({self.settings.client_dim_account_key_column} AS STRING))), '') AS dim_account_key,
-              NULLIF(LOWER(TRIM(CAST({self.settings.client_dim_domain_column} AS STRING))), '') AS dim_domain,
-              NULLIF(LOWER(TRIM(CAST({self.settings.client_dim_name_column} AS STRING))), '') AS dim_name,
-              NULLIF(LOWER(TRIM(CAST({self.settings.client_dim_city_column} AS STRING))), '') AS dim_city,
-              NULLIF(LOWER(TRIM(CAST({self.settings.client_dim_state_column} AS STRING))), '') AS dim_state,
-              NULLIF(LOWER(TRIM(CAST({self.settings.client_dim_email_domain_column} AS STRING))), '') AS dim_email_domain,
-              NULLIF(LOWER(TRIM(CAST({self.settings.client_dim_email_column} AS STRING))), '') AS dim_email,
-              CASE
-                WHEN LOWER(TRIM(CAST({self.settings.client_dim_current_client_flag_column} AS STRING))) IN ('true', '1', 'yes', 'y') THEN TRUE
-                WHEN LOWER(TRIM(CAST({self.settings.client_dim_current_client_flag_column} AS STRING))) IN ('false', '0', 'no', 'n') THEN FALSE
-                ELSE TRUE
-              END AS current_client_flag
+              LOWER(TRIM(client_key)) AS dim_client_id,
+              NULLIF(TRIM(client_name), '') AS client_name,
+              NULLIF(LOWER(TRIM(normalized_client_name)), '') AS normalized_client_name,
+              active_flag,
+              source_aliases,
+              COALESCE(
+                (
+                  SELECT REGEXP_EXTRACT(alias, r'^assignment:account_manager:(.+)$')
+                  FROM UNNEST(source_aliases) AS alias
+                  WHERE STARTS_WITH(alias, 'assignment:account_manager:')
+                  LIMIT 1
+                ),
+                (
+                  SELECT REGEXP_EXTRACT(alias, r'^assignment:account_coordinator:(.+)$')
+                  FROM UNNEST(source_aliases) AS alias
+                  WHERE STARTS_WITH(alias, 'assignment:account_coordinator:')
+                  LIMIT 1
+                )
+              ) AS dim_account_owner
             FROM `{client_dim_table}`
+          ),
+          client_dim_match_keys AS (
+            SELECT
+              dim_client_id,
+              dim_account_owner,
+              active_flag,
+              normalized_client_name AS match_key,
+              1 AS match_rank
+            FROM client_dim
+            WHERE normalized_client_name IS NOT NULL
+            UNION ALL
+            SELECT
+              dim_client_id,
+              dim_account_owner,
+              active_flag,
+              REGEXP_EXTRACT(alias, r'^airtable_name:(.+)$') AS match_key,
+              2 AS match_rank
+            FROM client_dim, UNNEST(source_aliases) AS alias
+            WHERE STARTS_WITH(alias, 'airtable_name:')
+            UNION ALL
+            SELECT
+              dim_client_id,
+              dim_account_owner,
+              active_flag,
+              REGEXP_EXTRACT(alias, r'^observed_name:(.+)$') AS match_key,
+              3 AS match_rank
+            FROM client_dim, UNNEST(source_aliases) AS alias
+            WHERE STARTS_WITH(alias, 'observed_name:')
+          ),
+          lead_candidates AS (
+            SELECT
+              prospect_lead_id,
+              dealer_name,
+              LOWER(
+                TRIM(
+                  REGEXP_REPLACE(
+                    COALESCE(dealer_name, ''),
+                    r'[^a-zA-Z0-9]+',
+                    ' '
+                  )
+                )
+              ) AS normalized_dealer_name
+            FROM `{self.settings.prospect_leads_table_fqn}`
           ),
           ranked_matches AS (
             SELECT
-              pl.prospect_lead_id,
-              cd.dim_client_id,
-              cd.dim_account_owner,
-              cd.current_client_flag,
+              lc.prospect_lead_id,
+              ck.dim_client_id,
+              ck.dim_account_owner,
+              ck.active_flag,
               ROW_NUMBER() OVER (
-                PARTITION BY pl.prospect_lead_id
+                PARTITION BY lc.prospect_lead_id
                 ORDER BY
-                  CASE
-                    WHEN cd.dim_account_key IS NOT NULL AND cd.dim_account_key = LOWER(pl.account_key) THEN 1
-                    WHEN cd.dim_domain IS NOT NULL AND cd.dim_domain = LOWER(pl.account_key) THEN 1
-                    WHEN cd.dim_name IS NOT NULL
-                         AND cd.dim_name = LOWER(pl.dealer_name)
-                         AND COALESCE(cd.dim_city, '') = COALESCE(LOWER(pl.city), '')
-                         AND COALESCE(cd.dim_state, '') = COALESCE(LOWER(pl.state), '') THEN 2
-                    WHEN cd.dim_email_domain IS NOT NULL AND cd.dim_email_domain = LOWER(pl.email_domain) THEN 3
-                    WHEN cd.dim_email IS NOT NULL AND cd.dim_email = LOWER(pl.email) THEN 4
-                    ELSE 9
-                  END,
-                  cd.dim_client_id
+                  ck.match_rank,
+                  ck.dim_client_id
               ) AS row_number
-            FROM `{self.settings.prospect_leads_table_fqn}` AS pl
-            JOIN client_dim AS cd
-              ON (
-                (cd.dim_account_key IS NOT NULL AND cd.dim_account_key = LOWER(pl.account_key))
-                OR (cd.dim_domain IS NOT NULL AND cd.dim_domain = LOWER(pl.account_key))
-                OR (
-                  cd.dim_name IS NOT NULL
-                  AND cd.dim_name = LOWER(pl.dealer_name)
-                  AND COALESCE(cd.dim_city, '') = COALESCE(LOWER(pl.city), '')
-                  AND COALESCE(cd.dim_state, '') = COALESCE(LOWER(pl.state), '')
-                )
-                OR (cd.dim_email_domain IS NOT NULL AND cd.dim_email_domain = LOWER(pl.email_domain))
-                OR (cd.dim_email IS NOT NULL AND cd.dim_email = LOWER(pl.email))
-              )
+            FROM lead_candidates AS lc
+            JOIN client_dim_match_keys AS ck
+              ON ck.match_key = lc.normalized_dealer_name
           )
           SELECT
             prospect_lead_id,
             dim_client_id,
             dim_account_owner,
-            current_client_flag
+            active_flag
           FROM ranked_matches
           WHERE row_number = 1
         ) AS source
@@ -232,9 +289,12 @@ class ClientDimService:
             dim_client_match_flag = TRUE,
             dim_client_id = source.dim_client_id,
             dim_account_owner = source.dim_account_owner,
-            prospecting_allowed_flag = FALSE,
-            suppression_reason = 'client_dim_match',
-            current_client_override_flag = source.current_client_flag,
+            prospecting_allowed_flag = NOT source.active_flag,
+            suppression_reason = CASE
+              WHEN source.active_flag THEN 'client_dim_active_client'
+              ELSE NULL
+            END,
+            current_client_override_flag = source.active_flag,
             updated_at = CURRENT_TIMESTAMP()
         """
 
