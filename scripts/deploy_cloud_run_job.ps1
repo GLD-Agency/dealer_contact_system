@@ -74,6 +74,33 @@ if ($env:CLIENT_DIM_DATASET) {
 if ($env:CLIENT_DIM_TABLE) {
     $envVars = "$envVars,CLIENT_DIM_TABLE=$($env:CLIENT_DIM_TABLE)"
 }
+if ($env:AI_RETRIEVAL_ENABLED) {
+    $envVars = "$envVars,AI_RETRIEVAL_ENABLED=$($env:AI_RETRIEVAL_ENABLED)"
+}
+if ($env:AI_RETRIEVAL_PROVIDER_ORDER) {
+    $envVars = "$envVars,AI_RETRIEVAL_PROVIDER_ORDER=$($env:AI_RETRIEVAL_PROVIDER_ORDER)"
+}
+if ($env:AI_RETRIEVAL_COOLDOWN_HOURS) {
+    $envVars = "$envVars,AI_RETRIEVAL_COOLDOWN_HOURS=$($env:AI_RETRIEVAL_COOLDOWN_HOURS)"
+}
+if ($env:GEMINI_ENABLED) {
+    $envVars = "$envVars,GEMINI_ENABLED=$($env:GEMINI_ENABLED)"
+}
+if ($env:GEMINI_API_KEY) {
+    $envVars = "$envVars,GEMINI_API_KEY=$($env:GEMINI_API_KEY)"
+}
+if ($env:GEMINI_MODEL) {
+    $envVars = "$envVars,GEMINI_MODEL=$($env:GEMINI_MODEL)"
+}
+if ($env:OPENAI_ENABLED) {
+    $envVars = "$envVars,OPENAI_ENABLED=$($env:OPENAI_ENABLED)"
+}
+if ($env:OPENAI_API_KEY) {
+    $envVars = "$envVars,OPENAI_API_KEY=$($env:OPENAI_API_KEY)"
+}
+if ($env:OPENAI_MODEL) {
+    $envVars = "$envVars,OPENAI_MODEL=$($env:OPENAI_MODEL)"
+}
 
 Write-Host "Ensuring Artifact Registry repository exists..."
 cmd /c "gcloud artifacts repositories describe $Repository --location=$Region --project=$ProjectId >nul 2>nul"

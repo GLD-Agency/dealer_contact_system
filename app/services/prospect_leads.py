@@ -89,16 +89,16 @@ class ProspectLeadService:
             ) AS phone_number,
             COALESCE(NULLIF(TRIM(da.account_name), ''), da.account_key) AS dealer_name,
             da.account_key,
-            da.website_url,
-            COALESCE(NULLIF(TRIM(da.account_city), ''), NULLIF(TRIM(da.gbp_city), '')) AS city,
-            COALESCE(NULLIF(TRIM(da.account_state), ''), NULLIF(TRIM(da.gbp_state_or_province), '')) AS state,
-            NULLIF(TRIM(da.gbp_address_line), '') AS address_line,
-            NULLIF(TRIM(da.gbp_postal_code), '') AS postal_code,
-            COALESCE(NULLIF(TRIM(pc.country), ''), NULLIF(TRIM(da.gbp_country), ''), 'United States') AS country,
+            COALESCE(NULLIF(TRIM(da.website_url), ''), NULLIF(TRIM(da.ai_website_url), '')) AS website_url,
+            COALESCE(NULLIF(TRIM(da.account_city), ''), NULLIF(TRIM(da.ai_city), ''), NULLIF(TRIM(da.gbp_city), '')) AS city,
+            COALESCE(NULLIF(TRIM(da.account_state), ''), NULLIF(TRIM(da.ai_state_or_province), ''), NULLIF(TRIM(da.gbp_state_or_province), '')) AS state,
+            COALESCE(NULLIF(TRIM(da.ai_address_line), ''), NULLIF(TRIM(da.gbp_address_line), '')) AS address_line,
+            COALESCE(NULLIF(TRIM(da.ai_postal_code), ''), NULLIF(TRIM(da.gbp_postal_code), '')) AS postal_code,
+            COALESCE(NULLIF(TRIM(pc.country), ''), NULLIF(TRIM(da.ai_country), ''), NULLIF(TRIM(da.gbp_country), ''), 'United States') AS country,
             COALESCE(
               NULLIF(TRIM(pc.market), ''),
               CASE
-                WHEN COALESCE(NULLIF(TRIM(pc.country), ''), NULLIF(TRIM(da.gbp_country), ''), 'United States') = 'Canada' THEN 'Canada'
+                WHEN COALESCE(NULLIF(TRIM(pc.country), ''), NULLIF(TRIM(da.ai_country), ''), NULLIF(TRIM(da.gbp_country), ''), 'United States') = 'Canada' THEN 'Canada'
                 ELSE 'US'
               END
             ) AS market,
@@ -116,14 +116,24 @@ class ProspectLeadService:
             COALESCE(NULLIF(TRIM(pc.source_file_name), ''), pc.source_table, 'contact_master') AS source_list,
             COALESCE(NULLIF(TRIM(da.website_phone), ''), NULLIF(TRIM(da.account_phone), '')) AS website_phone,
             NULLIF(TRIM(da.gbp_phone), '') AS gbp_phone,
-            COALESCE(NULLIF(TRIM(da.best_phone), ''), NULLIF(TRIM(da.website_phone), ''), NULLIF(TRIM(da.gbp_phone), ''), NULLIF(TRIM(da.account_phone), '')) AS best_phone,
+            NULLIF(TRIM(da.ai_phone), '') AS ai_phone,
+            NULLIF(TRIM(da.ai_address_line), '') AS ai_address_line,
+            NULLIF(TRIM(da.ai_city), '') AS ai_city,
+            NULLIF(TRIM(da.ai_state_or_province), '') AS ai_state_or_province,
+            NULLIF(TRIM(da.ai_postal_code), '') AS ai_postal_code,
+            NULLIF(TRIM(da.ai_country), '') AS ai_country,
+            NULLIF(TRIM(da.ai_source_provider), '') AS ai_source_provider,
+            NULLIF(TRIM(da.ai_source_url), '') AS ai_source_url,
+            COALESCE(NULLIF(TRIM(da.best_phone), ''), NULLIF(TRIM(da.website_phone), ''), NULLIF(TRIM(da.ai_phone), ''), NULLIF(TRIM(da.gbp_phone), ''), NULLIF(TRIM(da.account_phone), '')) AS best_phone,
             COALESCE(NULLIF(TRIM(da.best_phone_source), ''), CASE
               WHEN NULLIF(TRIM(da.website_phone), '') IS NOT NULL OR NULLIF(TRIM(da.account_phone), '') IS NOT NULL THEN 'website'
+              WHEN NULLIF(TRIM(da.ai_phone), '') IS NOT NULL THEN 'ai'
               WHEN NULLIF(TRIM(da.gbp_phone), '') IS NOT NULL THEN 'gbp'
               ELSE NULL
             END) AS best_phone_source,
             CASE
               WHEN NULLIF(TRIM(da.account_city), '') IS NOT NULL OR NULLIF(TRIM(da.account_state), '') IS NOT NULL THEN 'website'
+              WHEN NULLIF(TRIM(da.ai_address_line), '') IS NOT NULL OR NULLIF(TRIM(da.ai_city), '') IS NOT NULL THEN 'ai'
               WHEN NULLIF(TRIM(da.gbp_address_line), '') IS NOT NULL OR NULLIF(TRIM(da.gbp_city), '') IS NOT NULL THEN 'gbp'
               ELSE NULL
             END AS best_location_source,
@@ -200,7 +210,15 @@ class ProspectLeadService:
           country = 'Canada' AS is_canada,
           website_phone,
           gbp_phone,
+          ai_phone,
           best_location_source,
+          ai_address_line,
+          ai_city,
+          ai_state_or_province,
+          ai_postal_code,
+          ai_country,
+          ai_source_provider,
+          ai_source_url,
           best_phone,
           best_phone_source,
           contact_confidence_score,

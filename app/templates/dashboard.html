@@ -189,12 +189,24 @@
               <strong>{{ "{:,}".format(data.overview.accounts_with_gbp_phone or 0) }}</strong>
             </div>
             <div class="metric-row">
+              <span>Accounts With AI Phone</span>
+              <strong>{{ "{:,}".format(data.overview.accounts_with_ai_phone or 0) }}</strong>
+            </div>
+            <div class="metric-row">
               <span>Accounts With GBP Address</span>
               <strong>{{ "{:,}".format(data.overview.accounts_with_gbp_address or 0) }}</strong>
             </div>
             <div class="metric-row">
+              <span>Accounts With AI Address</span>
+              <strong>{{ "{:,}".format(data.overview.accounts_with_ai_address or 0) }}</strong>
+            </div>
+            <div class="metric-row">
               <span>Best Phone From GBP</span>
               <strong>{{ "{:,}".format(data.overview.accounts_with_best_phone_from_gbp or 0) }}</strong>
+            </div>
+            <div class="metric-row">
+              <span>Best Phone From AI</span>
+              <strong>{{ "{:,}".format(data.overview.accounts_with_best_phone_from_ai or 0) }}</strong>
             </div>
             <div class="metric-row">
               <span>Activation-Ready Contacts</span>
@@ -232,6 +244,10 @@
               <span>Managed Fetch Eligible</span>
               <strong>{{ "{:,}".format(data.overview.managed_fetch_eligible_accounts or 0) }}</strong>
             </div>
+            <div class="metric-row">
+              <span>Queued AI Account Facts</span>
+              <strong>{{ "{:,}".format(data.overview.queued_ai_account_facts or 0) }}</strong>
+            </div>
           </div>
         </article>
       </section>
@@ -262,6 +278,21 @@
             <div class="metric-row">
               <span>{{ row.label }}</span>
               <strong>{{ "{:,}".format(row.total_accounts or 0) }}</strong>
+            </div>
+            {% endfor %}
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="section-head">
+            <h2>AI Retrieval</h2>
+            <p>Recent provider results for protected-site account facts.</p>
+          </div>
+          <div class="list-stack">
+            {% for row in data.ai_provider_counts %}
+            <div class="metric-row">
+              <span>{{ row.label }}: {{ "{:,}".format(row.successful_retrievals or 0) }} ok / {{ "{:,}".format(row.failed_retrievals or 0) }} failed</span>
+              <strong>{{ "{:,}".format(row.total_attempts or 0) }}</strong>
             </div>
             {% endfor %}
           </div>

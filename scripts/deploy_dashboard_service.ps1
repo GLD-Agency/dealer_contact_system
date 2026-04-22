@@ -57,6 +57,15 @@ if ($env:CLIENT_DIM_DATASET) {
 if ($env:CLIENT_DIM_TABLE) {
   $envVars += "CLIENT_DIM_TABLE=$($env:CLIENT_DIM_TABLE)"
 }
+if ($env:AI_RETRIEVAL_ENABLED) {
+  $envVars += "AI_RETRIEVAL_ENABLED=$($env:AI_RETRIEVAL_ENABLED)"
+}
+if ($env:GEMINI_ENABLED) {
+  $envVars += "GEMINI_ENABLED=$($env:GEMINI_ENABLED)"
+}
+if ($env:OPENAI_ENABLED) {
+  $envVars += "OPENAI_ENABLED=$($env:OPENAI_ENABLED)"
+}
 
 gcloud builds submit `
   --project $ProjectId `

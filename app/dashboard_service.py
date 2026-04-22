@@ -47,6 +47,7 @@ class DashboardService:
             "fetch_status_counts": self._get_fetch_status_counts(),
             "brand_counts": self._get_brand_counts(),
             "role_family_counts": self._get_role_family_counts(),
+            "ai_provider_counts": self._get_ai_provider_counts(),
             "queue_rows": self._get_queue_rows(),
             "recent_runs": self._get_recent_runs(),
             "blocked_accounts": self._get_blocked_accounts(),
@@ -67,8 +68,11 @@ class DashboardService:
           accounts_with_phone,
           accounts_with_website_phone,
           accounts_with_gbp_phone,
+          accounts_with_ai_phone,
           accounts_with_gbp_address,
+          accounts_with_ai_address,
           accounts_with_best_phone_from_gbp,
+          accounts_with_best_phone_from_ai,
           activation_ready_accounts,
           marketing_ready_contacts,
           sales_ready_leads,
@@ -84,6 +88,7 @@ class DashboardService:
           website_extracted_contacts,
           blocked_fetch_accounts,
           managed_fetch_eligible_accounts,
+          queued_ai_account_facts,
           queued_validate,
           queued_enrich,
           queued_extract,
@@ -100,8 +105,11 @@ class DashboardService:
           (SELECT COUNTIF(account_phone IS NOT NULL AND TRIM(account_phone) != '') FROM `{self.settings.dealer_accounts_table_fqn}`),
           (SELECT COUNTIF(website_phone IS NOT NULL AND TRIM(website_phone) != '') FROM `{self.settings.dealer_accounts_table_fqn}`),
           (SELECT COUNTIF(gbp_phone IS NOT NULL AND TRIM(gbp_phone) != '') FROM `{self.settings.dealer_accounts_table_fqn}`),
+          (SELECT COUNTIF(ai_phone IS NOT NULL AND TRIM(ai_phone) != '') FROM `{self.settings.dealer_accounts_table_fqn}`),
           (SELECT COUNTIF(gbp_address_line IS NOT NULL AND TRIM(gbp_address_line) != '') FROM `{self.settings.dealer_accounts_table_fqn}`),
+          (SELECT COUNTIF(ai_address_line IS NOT NULL AND TRIM(ai_address_line) != '') FROM `{self.settings.dealer_accounts_table_fqn}`),
           (SELECT COUNTIF(best_phone_source = 'gbp' AND best_phone IS NOT NULL AND TRIM(best_phone) != '') FROM `{self.settings.dealer_accounts_table_fqn}`),
+          (SELECT COUNTIF(best_phone_source = 'ai' AND best_phone IS NOT NULL AND TRIM(best_phone) != '') FROM `{self.settings.dealer_accounts_table_fqn}`),
           (SELECT COUNTIF(activation_status = 'activation_ready') FROM `{self.settings.dealer_accounts_table_fqn}`),
           (SELECT COUNT(*) FROM `{self.settings.marketing_ready_contacts_view_fqn}`),
           (SELECT COUNT(*) FROM `{self.settings.sales_ready_leads_view_fqn}`),
@@ -117,6 +125,7 @@ class DashboardService:
           (SELECT COUNTIF(source_type = 'website_contact_extraction') FROM `{self.settings.prospect_contacts_table_fqn}`),
           (SELECT COUNTIF(fetch_status = 'blocked' AND dealer_classification IN ('dealer', 'dealer_group')) FROM `{self.settings.dealer_accounts_table_fqn}`),
           (SELECT COUNTIF(managed_fetch_status = 'eligible') FROM `{self.settings.dealer_accounts_table_fqn}`),
+          (SELECT COUNTIF(task_type = 'ai_account_facts' AND status IN ('pending', 'retry')) FROM `{self.settings.account_work_queue_table_fqn}`),
           (SELECT COUNTIF(task_type = 'validate' AND status IN ('pending', 'retry')) FROM `{self.settings.account_work_queue_table_fqn}`),
           (SELECT COUNTIF(task_type = 'enrich' AND status IN ('pending', 'retry')) FROM `{self.settings.account_work_queue_table_fqn}`),
           (SELECT COUNTIF(task_type = 'extract_contacts' AND status IN ('pending', 'retry')) FROM `{self.settings.account_work_queue_table_fqn}`),
@@ -137,8 +146,11 @@ class DashboardService:
           (SELECT COUNTIF(account_phone IS NOT NULL AND TRIM(account_phone) != '') FROM `{self.settings.dealer_accounts_table_fqn}`) AS accounts_with_phone,
           (SELECT COUNTIF(website_phone IS NOT NULL AND TRIM(website_phone) != '') FROM `{self.settings.dealer_accounts_table_fqn}`) AS accounts_with_website_phone,
           (SELECT COUNTIF(gbp_phone IS NOT NULL AND TRIM(gbp_phone) != '') FROM `{self.settings.dealer_accounts_table_fqn}`) AS accounts_with_gbp_phone,
+          (SELECT COUNTIF(ai_phone IS NOT NULL AND TRIM(ai_phone) != '') FROM `{self.settings.dealer_accounts_table_fqn}`) AS accounts_with_ai_phone,
           (SELECT COUNTIF(gbp_address_line IS NOT NULL AND TRIM(gbp_address_line) != '') FROM `{self.settings.dealer_accounts_table_fqn}`) AS accounts_with_gbp_address,
+          (SELECT COUNTIF(ai_address_line IS NOT NULL AND TRIM(ai_address_line) != '') FROM `{self.settings.dealer_accounts_table_fqn}`) AS accounts_with_ai_address,
           (SELECT COUNTIF(best_phone_source = 'gbp' AND best_phone IS NOT NULL AND TRIM(best_phone) != '') FROM `{self.settings.dealer_accounts_table_fqn}`) AS accounts_with_best_phone_from_gbp,
+          (SELECT COUNTIF(best_phone_source = 'ai' AND best_phone IS NOT NULL AND TRIM(best_phone) != '') FROM `{self.settings.dealer_accounts_table_fqn}`) AS accounts_with_best_phone_from_ai,
           (SELECT COUNTIF(activation_status = 'activation_ready') FROM `{self.settings.dealer_accounts_table_fqn}`) AS activation_ready_accounts,
           (SELECT COUNT(*) FROM `{self.settings.marketing_ready_contacts_view_fqn}`) AS marketing_ready_contacts,
           (SELECT COUNT(*) FROM `{self.settings.sales_ready_leads_view_fqn}`) AS sales_ready_leads,
@@ -153,6 +165,7 @@ class DashboardService:
           (SELECT COUNTIF(NOT prospecting_allowed_flag) FROM `{self.settings.prospect_leads_table_fqn}`) AS dim_suppressed_leads,
           (SELECT COUNTIF(source_type = 'website_contact_extraction') FROM `{self.settings.prospect_contacts_table_fqn}`) AS website_extracted_contacts,
           (SELECT COUNT(*) FROM `{self.settings.pipeline_runs_table_fqn}`) AS pipeline_runs,
+          (SELECT COUNTIF(task_type = 'ai_account_facts' AND status IN ('pending', 'retry')) FROM `{self.settings.account_work_queue_table_fqn}`) AS queued_ai_account_facts,
           (SELECT COUNTIF(task_type = 'validate' AND status IN ('pending', 'retry')) FROM `{self.settings.account_work_queue_table_fqn}`) AS queued_validate,
           (SELECT COUNTIF(task_type = 'enrich' AND status IN ('pending', 'retry')) FROM `{self.settings.account_work_queue_table_fqn}`) AS queued_enrich,
           (SELECT COUNTIF(task_type = 'extract_contacts' AND status IN ('pending', 'retry')) FROM `{self.settings.account_work_queue_table_fqn}`) AS queued_extract,
@@ -176,8 +189,11 @@ class DashboardService:
           accounts_with_phone,
           accounts_with_website_phone,
           accounts_with_gbp_phone,
+          accounts_with_ai_phone,
           accounts_with_gbp_address,
+          accounts_with_ai_address,
           accounts_with_best_phone_from_gbp,
+          accounts_with_best_phone_from_ai,
           activation_ready_accounts,
           marketing_ready_contacts,
           sales_ready_leads,
@@ -193,6 +209,7 @@ class DashboardService:
           website_extracted_contacts,
           blocked_fetch_accounts,
           managed_fetch_eligible_accounts,
+          queued_ai_account_facts,
           queued_validate,
           queued_enrich,
           queued_extract,
@@ -216,8 +233,11 @@ class DashboardService:
           accounts_with_phone,
           accounts_with_website_phone,
           accounts_with_gbp_phone,
+          accounts_with_ai_phone,
           accounts_with_gbp_address,
+          accounts_with_ai_address,
           accounts_with_best_phone_from_gbp,
+          accounts_with_best_phone_from_ai,
           activation_ready_accounts,
           marketing_ready_contacts,
           sales_ready_leads,
@@ -233,6 +253,7 @@ class DashboardService:
           website_extracted_contacts,
           blocked_fetch_accounts,
           managed_fetch_eligible_accounts,
+          queued_ai_account_facts,
           queued_validate,
           queued_enrich,
           queued_extract,
@@ -255,8 +276,11 @@ class DashboardService:
           accounts_with_phone,
           accounts_with_website_phone,
           accounts_with_gbp_phone,
+          accounts_with_ai_phone,
           accounts_with_gbp_address,
+          accounts_with_ai_address,
           accounts_with_best_phone_from_gbp,
+          accounts_with_best_phone_from_ai,
           activation_ready_accounts,
           marketing_ready_contacts,
           sales_ready_leads,
@@ -290,8 +314,11 @@ class DashboardService:
             "accounts_with_phone": "Accounts With Phone",
             "accounts_with_website_phone": "Accounts With Website Phone",
             "accounts_with_gbp_phone": "Accounts With GBP Phone",
+            "accounts_with_ai_phone": "Accounts With AI Phone",
             "accounts_with_gbp_address": "Accounts With GBP Address",
+            "accounts_with_ai_address": "Accounts With AI Address",
             "accounts_with_best_phone_from_gbp": "Best Phone From GBP",
+            "accounts_with_best_phone_from_ai": "Best Phone From AI",
             "activation_ready_accounts": "Activation-Ready Accounts",
             "prospect_leads": "Prospect Leads",
             "marketing_ready_contacts": "Marketing-Ready Contacts",
@@ -345,8 +372,11 @@ class DashboardService:
             ("accounts_with_phone", "Accounts With Phone"),
             ("accounts_with_website_phone", "Website Phone Coverage"),
             ("accounts_with_gbp_phone", "GBP Phone Coverage"),
+            ("accounts_with_ai_phone", "AI Phone Coverage"),
             ("accounts_with_gbp_address", "GBP Address Coverage"),
+            ("accounts_with_ai_address", "AI Address Coverage"),
             ("accounts_with_best_phone_from_gbp", "Best Phone From GBP"),
+            ("accounts_with_best_phone_from_ai", "Best Phone From AI"),
             ("marketing_ready_contacts", "Marketing-Ready Contacts"),
             ("sales_ready_leads", "Sales-Ready Leads"),
             ("prospect_leads", "Prospect Leads"),
@@ -411,7 +441,11 @@ class DashboardService:
     def _get_connections(self, overview: dict[str, Any]) -> list[DashboardConnectionStatus]:
         """Create human-readable system health rows."""
 
-        system_statuses = self._get_named_system_statuses(("client_dim", "managed_fetch", "gbp_enrichment"))
+        system_statuses = self._get_named_system_statuses(("client_dim", "managed_fetch", "gbp_enrichment", "ai_retrieval"))
+        ai_configured = bool(
+            (self.settings.gemini_enabled and self.settings.gemini_api_key)
+            or (self.settings.openai_enabled and self.settings.openai_api_key)
+        )
         return [
             DashboardConnectionStatus(
                 name="BigQuery",
@@ -458,6 +492,15 @@ class DashboardService:
                 fallback_detail=(
                     f"{int(overview.get('accounts_with_gbp_phone', 0)):,} accounts have GBP phone coverage and "
                     f"{int(overview.get('accounts_with_gbp_address', 0)):,} have GBP address coverage."
+                ),
+            ),
+            self._system_status_row(
+                name="AI Retrieval",
+                sync_row=system_statuses.get("ai_retrieval"),
+                fallback_status="healthy" if self.settings.ai_retrieval_enabled and ai_configured else "warning",
+                fallback_detail=(
+                    f"{int(overview.get('accounts_with_ai_phone', 0)):,} accounts have AI phone coverage and "
+                    f"{int(overview.get('accounts_with_ai_address', 0)):,} have AI address coverage."
                 ),
             ),
         ]
@@ -675,6 +718,22 @@ class DashboardService:
         GROUP BY label
         ORDER BY total_contacts DESC, label ASC
         LIMIT 12
+        """
+        return self.repository.fetch_all(query)
+
+    def _get_ai_provider_counts(self) -> list[dict[str, Any]]:
+        """Return recent AI retrieval success/failure counts by provider."""
+
+        query = f"""
+        SELECT
+          provider AS label,
+          COUNTIF(provider_status = 'success') AS successful_retrievals,
+          COUNTIF(provider_status = 'failed') AS failed_retrievals,
+          COUNT(*) AS total_attempts
+        FROM `{self.settings.ai_retrieval_results_table_fqn}`
+        WHERE retrieved_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
+        GROUP BY provider
+        ORDER BY total_attempts DESC, provider ASC
         """
         return self.repository.fetch_all(query)
 

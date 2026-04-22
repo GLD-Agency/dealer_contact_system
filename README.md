@@ -20,6 +20,7 @@ Phase 2 foundation for a dealer contact pipeline that uses BigQuery as the sourc
 - A materialized `prospect_leads` table for downstream activation and exports
 - A client DIM integration scaffold for suppression and ownership mapping
 - Managed-fetch escalation tracking for persistent blocked Dealer Inspire / Cloudflare sites
+- A provider-neutral AI retrieval lane with Gemini-first / OpenAI-second account-facts support
 - CLI commands for setup, normalize, and report
 - Helper scripts for connection checks and operational entry points
 
@@ -137,11 +138,13 @@ gcloud auth application-default login
 - `PROSPECT_LEADS_TABLE`: Materialized downstream prospect database table
 - `MARKETING_READY_CONTACTS_VIEW`: BigQuery view used for activation-safe marketing syncs
 - `SALES_READY_LEADS_VIEW`: BigQuery view used for tighter outbound sales lead review
+- `AI_RETRIEVAL_RESULTS_TABLE`: Provenance table for structured AI retrieval attempts and citations
 - `WORKER_BATCH_SIZE`: Default account batch size for queue-driven workers
 - `WORKER_LEASE_MINUTES`: How long a worker lease remains valid before another worker can retry it
 - `VALIDATE_WORKER_BATCH_SIZE`: Batch size for one queue-cycle validation step
 - `ENRICH_WORKER_BATCH_SIZE`: Batch size for one queue-cycle enrichment step
 - `GBP_WORKER_BATCH_SIZE`: Batch size for one queue-cycle GBP enrichment step
+- `AI_RETRIEVAL_BATCH_SIZE`: Batch size for one queue-cycle AI account-facts step
 - `EXTRACT_WORKER_BATCH_SIZE`: Batch size for one queue-cycle contact extraction step
 - `RETRY_BLOCKED_WORKER_BATCH_SIZE`: Batch size for one queue-cycle blocked-site retry step
 - `CAMPAIGN_MONITOR_SYNC_BATCH_SIZE`: Subscriber batch size for one Campaign Monitor sync step
@@ -153,6 +156,15 @@ gcloud auth application-default login
 - `MANAGED_FETCH_PROVIDER`: Label for the anti-bot provider being used or planned
 - `MANAGED_FETCH_MIN_BLOCKED_ATTEMPTS`: Blocked-attempt threshold before escalation eligibility
 - `MANAGED_FETCH_COOLDOWN_HOURS`: Cooldown before re-flagging the same blocked site
+- `AI_RETRIEVAL_ENABLED`: Whether the provider-neutral AI retrieval lane should run
+- `AI_RETRIEVAL_PROVIDER_ORDER`: Ordered provider fallback such as `gemini,openai`
+- `AI_RETRIEVAL_COOLDOWN_HOURS`: Cooldown before the same account re-enters the AI lane
+- `GEMINI_ENABLED`: Whether Gemini account-facts retrieval is enabled
+- `GEMINI_API_KEY`: API key for Gemini account-facts retrieval
+- `GEMINI_MODEL`: Gemini model name used for AI retrieval
+- `OPENAI_ENABLED`: Whether OpenAI Responses account-facts retrieval is enabled
+- `OPENAI_API_KEY`: API key for OpenAI account-facts retrieval
+- `OPENAI_MODEL`: OpenAI model name used for AI retrieval
 - `CLIENT_DIM_*`: Cross-project BigQuery configuration for client suppression and ownership mapping
 - `CLOUD_RUN_REGION`: Target region for Cloud Run jobs
 - `BROWSER_TIMEOUT_SECONDS`: Timeout for browser-backed blocked-site retries
@@ -196,6 +208,8 @@ python -m app run-queue-cycle --seed
 python -m app capture-dashboard-snapshot
 python -m app refresh-gbp-enrichment --dry-run --limit 25
 python -m app refresh-gbp-enrichment --limit 25
+python -m app refresh-ai-account-facts --dry-run --limit 15
+python -m app refresh-ai-account-facts --limit 15
 python -m app refresh-prospect-leads --dry-run
 python -m app refresh-prospect-leads
 python -m app refresh-client-dim --dry-run
@@ -239,6 +253,8 @@ python main.py run-queue-cycle --seed
 python main.py capture-dashboard-snapshot
 python main.py refresh-gbp-enrichment --dry-run --limit 25
 python main.py refresh-gbp-enrichment --limit 25
+python main.py refresh-ai-account-facts --dry-run --limit 15
+python main.py refresh-ai-account-facts --limit 15
 python main.py refresh-prospect-leads --dry-run
 python main.py refresh-prospect-leads
 python main.py refresh-client-dim --dry-run
@@ -361,6 +377,8 @@ Queue task types:
 
 - `validate`
 - `enrich`
+- `enrich_gbp`
+- `ai_account_facts`
 - `extract_contacts`
 - `retry_blocked`
 
@@ -378,6 +396,7 @@ python main.py seed-work-queue --task-type all
 python main.py run-worker --task-type validate --batch-size 50
 python main.py run-worker --task-type enrich --batch-size 25
 python main.py run-worker --task-type enrich_gbp --batch-size 25
+python main.py run-worker --task-type ai_account_facts --batch-size 15
 python main.py run-worker --task-type extract_contacts --batch-size 25
 python main.py run-worker --task-type retry_blocked --batch-size 10
 python main.py report
@@ -401,8 +420,9 @@ That command runs:
 1. `validate`
 2. `enrich`
 3. `enrich_gbp`
-4. `extract_contacts`
-5. `retry_blocked`
+4. `retry_blocked`
+5. `ai_account_facts`
+6. `extract_contacts`
 
 using the environment-configured worker batch sizes.
 
@@ -509,6 +529,7 @@ Once that is in place:
 - Cloud Run + Scheduler keep the worker running
 - your laptop is only a development environment, not the production control plane
 - GBP enrichment can be used as a lower-cost fallback for blocked sites before escalating to a managed anti-bot provider
+- AI retrieval can be used as a provider-neutral structured-facts lane for blocked or low-information dealer sites before managed anti-bot escalation
 
 ## Canonical Tables
 
@@ -535,6 +556,8 @@ It also creates a materialized downstream activation table:
 `sales_ready_leads` is the tighter lead view for outreach workflows. It excludes current clients and focuses on validated `dealer` and `dealer_group` accounts.
 
 `prospect_leads` is the stable BigQuery prospect database for downstream tools. It carries canonical account/contact context, readiness flags, phone-source lineage, Canada/current-client segmentation, and DIM suppression fields.
+
+`ai_retrieval_results` stores provider-neutral structured AI retrieval attempts, citations, confidence, and errors so canonical account updates can stay provenance-backed rather than relying on raw prompt text.
 
 The normalization pipeline uses stable SHA256-based IDs to support safe reruns:
 
@@ -587,6 +610,7 @@ The contact extraction pipeline writes website-derived leadership contacts for v
 - Basic HTTP fetch attempts are now tracked so blocked sites can move into a future browser-backed retry queue without using your local IP.
 - Browser retries are a separate command so they can later run from cloud infrastructure without using your local IP.
 - Blocked-site retries now use progressive cooldown windows so the system does not hammer the same domain repeatedly overnight.
+- AI retrieval sits after browser/GBP fallback and stores structured facts plus citations before promoting them into canonical account fields.
 - Contact extraction currently only promotes contacts when a public email, nearby person name, and recognizable leadership title are all present.
 - Dealer validation is intentionally conservative and is meant to tighten before broad-scale sync and activation.
 - The normalization pipeline is local CLI-first, but organized so it can later move to Cloud Run jobs.

@@ -31,6 +31,7 @@ class Settings:
     dashboard_snapshots_table: str
     external_seed_contacts_table: str
     prospect_leads_table: str
+    ai_retrieval_results_table: str
     activation_ready_contacts_view: str
     marketing_ready_contacts_view: str
     sales_ready_leads_view: str
@@ -41,6 +42,7 @@ class Settings:
     validate_worker_batch_size: int
     enrich_worker_batch_size: int
     gbp_worker_batch_size: int
+    ai_retrieval_batch_size: int
     extract_worker_batch_size: int
     retry_blocked_worker_batch_size: int
     campaign_monitor_sync_batch_size: int
@@ -54,6 +56,15 @@ class Settings:
     managed_fetch_batch_size: int
     managed_fetch_min_blocked_attempts: int
     managed_fetch_cooldown_hours: int
+    ai_retrieval_enabled: bool
+    ai_retrieval_provider_order: str
+    ai_retrieval_cooldown_hours: int
+    gemini_enabled: bool
+    gemini_api_key: str | None
+    gemini_model: str
+    openai_enabled: bool
+    openai_api_key: str | None
+    openai_model: str
     cloud_run_region: str
     request_timeout_seconds: int
     browser_timeout_seconds: int
@@ -144,6 +155,12 @@ class Settings:
         return self.table_fqn(self.prospect_leads_table)
 
     @property
+    def ai_retrieval_results_table_fqn(self) -> str:
+        """Return the fully qualified AI retrieval provenance table name."""
+
+        return self.table_fqn(self.ai_retrieval_results_table)
+
+    @property
     def activation_ready_contacts_view_fqn(self) -> str:
         """Return the fully qualified activation-ready contacts view name."""
 
@@ -195,6 +212,7 @@ def get_settings() -> Settings:
         dashboard_snapshots_table=os.getenv("DASHBOARD_SNAPSHOTS_TABLE", "dashboard_snapshots"),
         external_seed_contacts_table=os.getenv("EXTERNAL_SEED_CONTACTS_TABLE", "external_seed_contacts"),
         prospect_leads_table=os.getenv("PROSPECT_LEADS_TABLE", "prospect_leads"),
+        ai_retrieval_results_table=os.getenv("AI_RETRIEVAL_RESULTS_TABLE", "ai_retrieval_results"),
         activation_ready_contacts_view=os.getenv("ACTIVATION_READY_CONTACTS_VIEW", "activation_ready_contacts"),
         marketing_ready_contacts_view=os.getenv("MARKETING_READY_CONTACTS_VIEW", "marketing_ready_contacts"),
         sales_ready_leads_view=os.getenv("SALES_READY_LEADS_VIEW", "sales_ready_leads"),
@@ -208,6 +226,7 @@ def get_settings() -> Settings:
         validate_worker_batch_size=int(os.getenv("VALIDATE_WORKER_BATCH_SIZE", "50")),
         enrich_worker_batch_size=int(os.getenv("ENRICH_WORKER_BATCH_SIZE", "25")),
         gbp_worker_batch_size=int(os.getenv("GBP_WORKER_BATCH_SIZE", "25")),
+        ai_retrieval_batch_size=int(os.getenv("AI_RETRIEVAL_BATCH_SIZE", "15")),
         extract_worker_batch_size=int(os.getenv("EXTRACT_WORKER_BATCH_SIZE", "25")),
         retry_blocked_worker_batch_size=int(os.getenv("RETRY_BLOCKED_WORKER_BATCH_SIZE", "10")),
         campaign_monitor_sync_batch_size=int(os.getenv("CAMPAIGN_MONITOR_SYNC_BATCH_SIZE", "100")),
@@ -221,6 +240,15 @@ def get_settings() -> Settings:
         managed_fetch_batch_size=int(os.getenv("MANAGED_FETCH_BATCH_SIZE", "25")),
         managed_fetch_min_blocked_attempts=int(os.getenv("MANAGED_FETCH_MIN_BLOCKED_ATTEMPTS", "3")),
         managed_fetch_cooldown_hours=int(os.getenv("MANAGED_FETCH_COOLDOWN_HOURS", "72")),
+        ai_retrieval_enabled=os.getenv("AI_RETRIEVAL_ENABLED", "true").lower() == "true",
+        ai_retrieval_provider_order=os.getenv("AI_RETRIEVAL_PROVIDER_ORDER", "gemini,openai"),
+        ai_retrieval_cooldown_hours=int(os.getenv("AI_RETRIEVAL_COOLDOWN_HOURS", "72")),
+        gemini_enabled=os.getenv("GEMINI_ENABLED", "false").lower() == "true",
+        gemini_api_key=os.getenv("GEMINI_API_KEY"),
+        gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+        openai_enabled=os.getenv("OPENAI_ENABLED", "false").lower() == "true",
+        openai_api_key=os.getenv("OPENAI_API_KEY"),
+        openai_model=os.getenv("OPENAI_MODEL", "gpt-5.4"),
         cloud_run_region=os.getenv("CLOUD_RUN_REGION", "us-central1"),
         request_timeout_seconds=int(os.getenv("REQUEST_TIMEOUT_SECONDS", "12")),
         browser_timeout_seconds=int(os.getenv("BROWSER_TIMEOUT_SECONDS", "30")),

@@ -9,6 +9,7 @@ from app.bigquery_repository import BigQueryRepository
 from app.config import Settings
 from app.logging_utils import get_logger
 from app.services.account_enrichment import AccountEnrichmentService
+from app.services.ai_retrieval import AiRetrievalService
 from app.services.browser_retry import BrowserRetryService
 from app.services.contact_extraction import ContactExtractionService
 from app.services.dealer_validation import DealerValidationService
@@ -20,12 +21,14 @@ logger = get_logger(__name__)
 TASK_VALIDATE = "validate"
 TASK_ENRICH = "enrich"
 TASK_ENRICH_GBP = "enrich_gbp"
+TASK_AI_ACCOUNT_FACTS = "ai_account_facts"
 TASK_EXTRACT_CONTACTS = "extract_contacts"
 TASK_RETRY_BLOCKED = "retry_blocked"
 TASK_TYPES = [
     TASK_VALIDATE,
     TASK_ENRICH,
     TASK_ENRICH_GBP,
+    TASK_AI_ACCOUNT_FACTS,
     TASK_EXTRACT_CONTACTS,
     TASK_RETRY_BLOCKED,
 ]
@@ -133,6 +136,7 @@ class WorkQueueService:
         self.dealer_validation = DealerValidationService(repository, settings)
         self.account_enrichment = AccountEnrichmentService(repository, settings)
         self.gbp_enrichment = GbpEnrichmentService(repository, settings)
+        self.ai_retrieval = AiRetrievalService(repository, settings)
         self.contact_extraction = ContactExtractionService(repository, settings)
         self.browser_retry = BrowserRetryService(repository, settings)
 
@@ -168,6 +172,11 @@ class WorkQueueService:
         if task_type == TASK_RETRY_BLOCKED:
             self._seed_retry_blocked_queue()
             logger.info("Seeded work queue | task_type=%s", task_type)
+            return
+        if task_type == TASK_AI_ACCOUNT_FACTS and (
+            not self.settings.ai_retrieval_enabled or not self.ai_retrieval._configured_providers()
+        ):
+            logger.info("Skipped AI queue seed because AI retrieval is not configured.")
             return
 
         source_query = self._seed_source_query(task_type)
@@ -414,6 +423,29 @@ class WorkQueueService:
                 OR fetch_status = 'blocked'
               )
             """
+        if task_type == TASK_AI_ACCOUNT_FACTS:
+            return f"""
+            SELECT
+              '{TASK_AI_ACCOUNT_FACTS}' AS task_type,
+              account_key,
+              65 AS priority
+            FROM `{self.settings.dealer_accounts_table_fqn}`
+            WHERE dealer_classification IN ('dealer', 'dealer_group')
+              AND (
+                fetch_status = 'blocked'
+                OR managed_fetch_status = 'eligible'
+                OR website_url IS NULL
+                OR TRIM(website_url) = ''
+                OR best_phone IS NULL
+                OR TRIM(best_phone) = ''
+                OR account_city IS NULL
+                OR account_state IS NULL
+              )
+              AND (
+                next_ai_retrieval_at IS NULL
+                OR next_ai_retrieval_at <= CURRENT_TIMESTAMP()
+              )
+            """
         if task_type == TASK_EXTRACT_CONTACTS:
             return f"""
             SELECT
@@ -553,6 +585,13 @@ class WorkQueueService:
             return
         if task_type == TASK_ENRICH_GBP:
             self.gbp_enrichment.enrich(
+                dry_run=False,
+                limit=limit,
+                account_keys=account_keys,
+            )
+            return
+        if task_type == TASK_AI_ACCOUNT_FACTS:
+            self.ai_retrieval.refresh_account_facts(
                 dry_run=False,
                 limit=limit,
                 account_keys=account_keys,
