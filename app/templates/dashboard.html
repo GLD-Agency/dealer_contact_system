@@ -33,41 +33,6 @@
         </div>
       </section>
 
-      <section class="card-grid metrics-grid">
-        <article class="card stat-card">
-          <span class="stat-label">Validated Dealers</span>
-          <strong class="stat-value">{{ "{:,}".format(data.overview.validated_dealers or 0) }}</strong>
-        </article>
-        <article class="card stat-card">
-          <span class="stat-label">Dealer Groups</span>
-          <strong class="stat-value">{{ "{:,}".format(data.overview.validated_dealer_groups or 0) }}</strong>
-        </article>
-        <article class="card stat-card">
-          <span class="stat-label">Website-Ready Dealers</span>
-          <strong class="stat-value">{{ "{:,}".format(data.overview.validated_websites or 0) }}</strong>
-        </article>
-        <article class="card stat-card">
-          <span class="stat-label">Marketing-Ready Contacts</span>
-          <strong class="stat-value">{{ "{:,}".format(data.overview.marketing_ready_contacts or 0) }}</strong>
-        </article>
-        <article class="card stat-card">
-          <span class="stat-label">Sales-Ready Leads</span>
-          <strong class="stat-value">{{ "{:,}".format(data.overview.sales_ready_leads or 0) }}</strong>
-        </article>
-        <article class="card stat-card">
-          <span class="stat-label">Activation-Ready Contacts</span>
-          <strong class="stat-value">{{ "{:,}".format(data.overview.activation_ready_contacts or 0) }}</strong>
-        </article>
-        <article class="card stat-card">
-          <span class="stat-label">Website Contacts</span>
-          <strong class="stat-value">{{ "{:,}".format(data.overview.website_extracted_contacts or 0) }}</strong>
-        </article>
-        <article class="card stat-card">
-          <span class="stat-label">Blocked Fetches</span>
-          <strong class="stat-value">{{ "{:,}".format(data.overview.blocked_fetch_accounts or 0) }}</strong>
-        </article>
-      </section>
-
       <section class="card">
         <div class="section-head">
           <h2>Change Since Last Snapshot</h2>
@@ -206,6 +171,10 @@
             <div class="metric-row">
               <span>Activation-Ready Accounts</span>
               <strong>{{ "{:,}".format(data.overview.activation_ready_accounts or 0) }}</strong>
+            </div>
+            <div class="metric-row">
+              <span>Accounts With Phone</span>
+              <strong>{{ "{:,}".format(data.overview.accounts_with_phone or 0) }}</strong>
             </div>
             <div class="metric-row">
               <span>Activation-Ready Contacts</span>

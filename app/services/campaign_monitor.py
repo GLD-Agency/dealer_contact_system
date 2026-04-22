@@ -58,6 +58,7 @@ class CampaignMonitorService:
         "Dealer Name": "Text",
         "City": "Text",
         "State": "Text",
+        "Phone": "Text",
         "Country": "Text",
         "Market": "Text",
         "Audience Type": "Text",
@@ -255,7 +256,7 @@ class CampaignMonitorService:
         dry_run: bool = False,
         limit: int = 100,
     ) -> CampaignMonitorSyncResult:
-        """Sync a deduped batch of marketing-ready subscribers into the master list."""
+        """Sync a deduped batch of activation-ready subscribers into the master list."""
 
         if not self.settings.campaign_monitor_api_key or not self.settings.campaign_monitor_client_id:
             return CampaignMonitorSyncResult(
@@ -314,6 +315,7 @@ class CampaignMonitorService:
                         {"Key": field_map["Dealer Name"], "Value": subscriber["dealer_name"]},
                         {"Key": field_map["City"], "Value": subscriber["city"]},
                         {"Key": field_map["State"], "Value": subscriber["state"]},
+                        {"Key": field_map["Phone"], "Value": subscriber["phone_number"]},
                         {"Key": field_map["Country"], "Value": subscriber["country"]},
                         {"Key": field_map["Market"], "Value": subscriber["market"]},
                         {"Key": field_map["Audience Type"], "Value": subscriber["audience_type"]},
@@ -522,7 +524,7 @@ class CampaignMonitorService:
         self.repository.execute_statement(query)
 
     def _load_sync_candidates(self, limit: int) -> list[dict[str, str]]:
-        """Load deduped, marketing-ready subscribers from BigQuery."""
+        """Load deduped, activation-ready subscribers from BigQuery."""
 
         query = f"""
         SELECT
@@ -533,12 +535,13 @@ class CampaignMonitorService:
           oem,
           city,
           state,
+          phone_number,
           country,
           market,
           audience_type,
           source_list,
           dealer_classification
-        FROM `{self.settings.marketing_ready_contacts_view_fqn}`
+        FROM `{self.settings.activation_ready_contacts_view_fqn}`
         ORDER BY oem ASC, dealer_name ASC, email ASC
         LIMIT {int(limit)}
         """
@@ -552,6 +555,7 @@ class CampaignMonitorService:
                 "oem": str(row.get("oem", "") or "").strip() or "Unknown",
                 "city": str(row.get("city", "") or "").strip(),
                 "state": str(row.get("state", "") or "").strip(),
+                "phone_number": str(row.get("phone_number", "") or "").strip(),
                 "country": str(row.get("country", "") or "").strip() or "United States",
                 "market": str(row.get("market", "") or "").strip() or "US",
                 "audience_type": str(row.get("audience_type", "") or "").strip() or "prospect",

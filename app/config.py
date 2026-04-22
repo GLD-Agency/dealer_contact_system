@@ -30,6 +30,7 @@ class Settings:
     pipeline_runs_table: str
     dashboard_snapshots_table: str
     external_seed_contacts_table: str
+    activation_ready_contacts_view: str
     marketing_ready_contacts_view: str
     sales_ready_leads_view: str
     external_seed_directory: str
@@ -112,6 +113,12 @@ class Settings:
         return self.table_fqn(self.external_seed_contacts_table)
 
     @property
+    def activation_ready_contacts_view_fqn(self) -> str:
+        """Return the fully qualified activation-ready contacts view name."""
+
+        return self.table_fqn(self.activation_ready_contacts_view)
+
+    @property
     def marketing_ready_contacts_view_fqn(self) -> str:
         """Return the fully qualified marketing-ready contacts view name."""
 
@@ -148,6 +155,7 @@ def get_settings() -> Settings:
         pipeline_runs_table=os.getenv("PIPELINE_RUNS_TABLE", "pipeline_runs"),
         dashboard_snapshots_table=os.getenv("DASHBOARD_SNAPSHOTS_TABLE", "dashboard_snapshots"),
         external_seed_contacts_table=os.getenv("EXTERNAL_SEED_CONTACTS_TABLE", "external_seed_contacts"),
+        activation_ready_contacts_view=os.getenv("ACTIVATION_READY_CONTACTS_VIEW", "activation_ready_contacts"),
         marketing_ready_contacts_view=os.getenv("MARKETING_READY_CONTACTS_VIEW", "marketing_ready_contacts"),
         sales_ready_leads_view=os.getenv("SALES_READY_LEADS_VIEW", "sales_ready_leads"),
         external_seed_directory=os.getenv(

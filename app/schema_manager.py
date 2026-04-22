@@ -31,6 +31,7 @@ class SchemaManager:
               dealer_classification STRING,
               account_city STRING,
               account_state STRING,
+              account_phone STRING,
               website_url STRING,
               account_type STRING,
               account_status STRING,
@@ -42,6 +43,7 @@ class SchemaManager:
               account_name_confidence_score FLOAT64,
               brand_confidence_score FLOAT64,
               location_confidence_score FLOAT64,
+              account_phone_confidence_score FLOAT64,
               source_type STRING,
               source_table STRING,
               website_source_url STRING,
@@ -50,6 +52,7 @@ class SchemaManager:
               dealer_classification_source_url STRING,
               dealer_validation_checked_at TIMESTAMP,
               location_source_url STRING,
+              account_phone_source_url STRING,
               fetch_status STRING,
               fetch_method STRING,
               blocked_reason STRING,
@@ -78,6 +81,7 @@ class SchemaManager:
               role_type STRING,
               role_title STRING,
               role_family STRING,
+              phone_number STRING,
               contact_status STRING,
               enrichment_stage STRING,
               activation_status STRING,
@@ -170,6 +174,7 @@ class SchemaManager:
               dealer_accounts INT64,
               validated_dealers INT64,
               validated_dealer_groups INT64,
+              accounts_with_phone INT64,
               activation_ready_accounts INT64,
               marketing_ready_contacts INT64,
               sales_ready_leads INT64,
@@ -229,6 +234,7 @@ class SchemaManager:
         alter_statements = [
             f"ALTER TABLE `{self.settings.dealer_accounts_table_fqn}` ADD COLUMN IF NOT EXISTS account_city STRING",
             f"ALTER TABLE `{self.settings.dealer_accounts_table_fqn}` ADD COLUMN IF NOT EXISTS account_state STRING",
+            f"ALTER TABLE `{self.settings.dealer_accounts_table_fqn}` ADD COLUMN IF NOT EXISTS account_phone STRING",
             f"ALTER TABLE `{self.settings.dealer_accounts_table_fqn}` ADD COLUMN IF NOT EXISTS dealer_classification STRING",
             f"ALTER TABLE `{self.settings.dealer_accounts_table_fqn}` ADD COLUMN IF NOT EXISTS enrichment_stage STRING",
             f"ALTER TABLE `{self.settings.dealer_accounts_table_fqn}` ADD COLUMN IF NOT EXISTS activation_status STRING",
@@ -237,12 +243,14 @@ class SchemaManager:
             f"ALTER TABLE `{self.settings.dealer_accounts_table_fqn}` ADD COLUMN IF NOT EXISTS account_name_confidence_score FLOAT64",
             f"ALTER TABLE `{self.settings.dealer_accounts_table_fqn}` ADD COLUMN IF NOT EXISTS brand_confidence_score FLOAT64",
             f"ALTER TABLE `{self.settings.dealer_accounts_table_fqn}` ADD COLUMN IF NOT EXISTS location_confidence_score FLOAT64",
+            f"ALTER TABLE `{self.settings.dealer_accounts_table_fqn}` ADD COLUMN IF NOT EXISTS account_phone_confidence_score FLOAT64",
             f"ALTER TABLE `{self.settings.dealer_accounts_table_fqn}` ADD COLUMN IF NOT EXISTS website_source_url STRING",
             f"ALTER TABLE `{self.settings.dealer_accounts_table_fqn}` ADD COLUMN IF NOT EXISTS account_name_source_url STRING",
             f"ALTER TABLE `{self.settings.dealer_accounts_table_fqn}` ADD COLUMN IF NOT EXISTS brand_source_url STRING",
             f"ALTER TABLE `{self.settings.dealer_accounts_table_fqn}` ADD COLUMN IF NOT EXISTS dealer_classification_source_url STRING",
             f"ALTER TABLE `{self.settings.dealer_accounts_table_fqn}` ADD COLUMN IF NOT EXISTS dealer_validation_checked_at TIMESTAMP",
             f"ALTER TABLE `{self.settings.dealer_accounts_table_fqn}` ADD COLUMN IF NOT EXISTS location_source_url STRING",
+            f"ALTER TABLE `{self.settings.dealer_accounts_table_fqn}` ADD COLUMN IF NOT EXISTS account_phone_source_url STRING",
             f"ALTER TABLE `{self.settings.dealer_accounts_table_fqn}` ADD COLUMN IF NOT EXISTS fetch_status STRING",
             f"ALTER TABLE `{self.settings.dealer_accounts_table_fqn}` ADD COLUMN IF NOT EXISTS fetch_method STRING",
             f"ALTER TABLE `{self.settings.dealer_accounts_table_fqn}` ADD COLUMN IF NOT EXISTS blocked_reason STRING",
@@ -251,6 +259,7 @@ class SchemaManager:
             f"ALTER TABLE `{self.settings.dealer_accounts_table_fqn}` ADD COLUMN IF NOT EXISTS last_fetch_success_at TIMESTAMP",
             f"ALTER TABLE `{self.settings.dealer_accounts_table_fqn}` ADD COLUMN IF NOT EXISTS last_verified_at TIMESTAMP",
             f"ALTER TABLE `{self.settings.prospect_contacts_table_fqn}` ADD COLUMN IF NOT EXISTS role_family STRING",
+            f"ALTER TABLE `{self.settings.prospect_contacts_table_fqn}` ADD COLUMN IF NOT EXISTS phone_number STRING",
             f"ALTER TABLE `{self.settings.prospect_contacts_table_fqn}` ADD COLUMN IF NOT EXISTS enrichment_stage STRING",
             f"ALTER TABLE `{self.settings.prospect_contacts_table_fqn}` ADD COLUMN IF NOT EXISTS activation_status STRING",
             f"ALTER TABLE `{self.settings.prospect_contacts_table_fqn}` ADD COLUMN IF NOT EXISTS source_file_name STRING",
@@ -275,6 +284,7 @@ class SchemaManager:
             f"ALTER TABLE `{self.settings.pipeline_runs_table_fqn}` ADD COLUMN IF NOT EXISTS run_notes STRING",
             f"ALTER TABLE `{self.settings.pipeline_runs_table_fqn}` ADD COLUMN IF NOT EXISTS started_at TIMESTAMP",
             f"ALTER TABLE `{self.settings.pipeline_runs_table_fqn}` ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP",
+            f"ALTER TABLE `{self.settings.dashboard_snapshots_table_fqn}` ADD COLUMN IF NOT EXISTS accounts_with_phone INT64",
             f"ALTER TABLE `{self.settings.dashboard_snapshots_table_fqn}` ADD COLUMN IF NOT EXISTS activation_ready_accounts INT64",
             f"ALTER TABLE `{self.settings.dashboard_snapshots_table_fqn}` ADD COLUMN IF NOT EXISTS marketing_ready_contacts INT64",
             f"ALTER TABLE `{self.settings.dashboard_snapshots_table_fqn}` ADD COLUMN IF NOT EXISTS sales_ready_leads INT64",
@@ -308,8 +318,8 @@ class SchemaManager:
     def _ensure_views(self) -> None:
         """Create or replace activation views used by downstream syncs."""
 
-        marketing_ready_view = f"""
-        CREATE OR REPLACE VIEW `{self.settings.marketing_ready_contacts_view_fqn}` AS
+        activation_ready_view = f"""
+        CREATE OR REPLACE VIEW `{self.settings.activation_ready_contacts_view_fqn}` AS
         WITH ranked_contacts AS (
           SELECT
             pc.prospect_contact_id,
@@ -317,6 +327,7 @@ class SchemaManager:
             COALESCE(NULLIF(TRIM(pc.full_name), ''), TRIM(CONCAT(COALESCE(pc.first_name, ''), ' ', COALESCE(pc.last_name, '')))) AS full_name,
             COALESCE(NULLIF(TRIM(pc.first_name), ''), '') AS first_name,
             COALESCE(NULLIF(TRIM(pc.last_name), ''), '') AS last_name,
+            COALESCE(NULLIF(TRIM(pc.phone_number), ''), NULLIF(TRIM(da.account_phone), ''), '') AS phone_number,
             COALESCE(pc.is_personal_email, FALSE) AS is_personal_email,
             COALESCE(NULLIF(TRIM(pc.role_family), ''), 'unclassified') AS role_family,
             COALESCE(NULLIF(TRIM(pc.role_title), ''), '') AS role_title,
@@ -372,12 +383,13 @@ class SchemaManager:
         SELECT
           prospect_contact_id,
           email,
-          full_name,
-          first_name,
-          last_name,
-          is_personal_email,
-          role_family,
-          role_title,
+            full_name,
+            first_name,
+            last_name,
+            phone_number,
+            is_personal_email,
+            role_family,
+            role_title,
           audience_type,
           market,
           country,
@@ -399,6 +411,16 @@ class SchemaManager:
         WHERE row_number = 1
         """
 
+        marketing_ready_view = f"""
+        CREATE OR REPLACE VIEW `{self.settings.marketing_ready_contacts_view_fqn}` AS
+        SELECT
+          *
+        FROM `{self.settings.activation_ready_contacts_view_fqn}`
+        WHERE TRIM(full_name) != ''
+          AND TRIM(dealer_name) != ''
+          AND TRIM(phone_number) != ''
+        """
+
         sales_ready_view = f"""
         CREATE OR REPLACE VIEW `{self.settings.sales_ready_leads_view_fqn}` AS
         SELECT
@@ -410,5 +432,6 @@ class SchemaManager:
           AND TRIM(dealer_name) != ''
         """
 
+        self.repository.execute_statement(activation_ready_view)
         self.repository.execute_statement(marketing_ready_view)
         self.repository.execute_statement(sales_ready_view)

@@ -551,6 +551,7 @@ def print_report(repository: BigQueryRepository, settings: Settings) -> None:
       (SELECT COUNTIF(account_city IS NOT NULL AND account_state IS NOT NULL) FROM `{settings.dealer_accounts_table_fqn}`) AS enriched_locations,
       (SELECT COUNTIF(dealer_classification = 'dealer') FROM `{settings.dealer_accounts_table_fqn}`) AS validated_dealers,
       (SELECT COUNTIF(dealer_classification = 'dealer_group') FROM `{settings.dealer_accounts_table_fqn}`) AS validated_dealer_groups,
+      (SELECT COUNTIF(account_phone IS NOT NULL AND TRIM(account_phone) != '') FROM `{settings.dealer_accounts_table_fqn}`) AS accounts_with_phone,
       (SELECT COUNTIF(activation_status = 'activation_ready') FROM `{settings.dealer_accounts_table_fqn}`) AS activation_ready_accounts,
       (SELECT COUNT(*) FROM `{settings.marketing_ready_contacts_view_fqn}`) AS marketing_ready_contacts,
       (SELECT COUNT(*) FROM `{settings.sales_ready_leads_view_fqn}`) AS sales_ready_leads,
@@ -559,7 +560,7 @@ def print_report(repository: BigQueryRepository, settings: Settings) -> None:
       (SELECT COUNTIF(dealer_classification = 'oem') FROM `{settings.dealer_accounts_table_fqn}`) AS validated_oems,
       (SELECT COUNTIF(dealer_classification = 'unknown') FROM `{settings.dealer_accounts_table_fqn}`) AS validated_unknowns,
       (SELECT COUNT(*) FROM `{settings.prospect_contacts_table_fqn}`) AS prospect_contacts,
-      (SELECT COUNTIF(activation_status = 'activation_ready') FROM `{settings.prospect_contacts_table_fqn}`) AS activation_ready_contacts,
+      (SELECT COUNT(*) FROM `{settings.activation_ready_contacts_view_fqn}`) AS activation_ready_contacts,
       (SELECT COUNTIF(audience_type = 'current_client') FROM `{settings.prospect_contacts_table_fqn}`) AS current_client_contacts,
       (SELECT COUNTIF(country = 'Canada') FROM `{settings.prospect_contacts_table_fqn}`) AS canada_contacts,
       (SELECT COUNTIF(source_type = 'website_contact_extraction') FROM `{settings.prospect_contacts_table_fqn}`) AS website_extracted_contacts,
@@ -591,6 +592,7 @@ def print_report(repository: BigQueryRepository, settings: Settings) -> None:
     print(f"Enriched locations: {report.get('enriched_locations', 0)}")
     print(f"Validated dealers: {report.get('validated_dealers', 0)}")
     print(f"Validated dealer groups: {report.get('validated_dealer_groups', 0)}")
+    print(f"Accounts with phone: {report.get('accounts_with_phone', 0)}")
     print(f"Activation-ready accounts: {report.get('activation_ready_accounts', 0)}")
     print(f"Marketing-ready contacts: {report.get('marketing_ready_contacts', 0)}")
     print(f"Sales-ready leads: {report.get('sales_ready_leads', 0)}")
