@@ -47,16 +47,16 @@
           <strong class="stat-value">{{ "{:,}".format(data.overview.validated_websites or 0) }}</strong>
         </article>
         <article class="card stat-card">
+          <span class="stat-label">Marketing-Ready Contacts</span>
+          <strong class="stat-value">{{ "{:,}".format(data.overview.marketing_ready_contacts or 0) }}</strong>
+        </article>
+        <article class="card stat-card">
+          <span class="stat-label">Sales-Ready Leads</span>
+          <strong class="stat-value">{{ "{:,}".format(data.overview.sales_ready_leads or 0) }}</strong>
+        </article>
+        <article class="card stat-card">
           <span class="stat-label">Activation-Ready Contacts</span>
           <strong class="stat-value">{{ "{:,}".format(data.overview.activation_ready_contacts or 0) }}</strong>
-        </article>
-        <article class="card stat-card">
-          <span class="stat-label">Current Clients</span>
-          <strong class="stat-value">{{ "{:,}".format(data.overview.current_client_contacts or 0) }}</strong>
-        </article>
-        <article class="card stat-card">
-          <span class="stat-label">Canada Contacts</span>
-          <strong class="stat-value">{{ "{:,}".format(data.overview.canada_contacts or 0) }}</strong>
         </article>
         <article class="card stat-card">
           <span class="stat-label">Website Contacts</span>
@@ -210,6 +210,22 @@
             <div class="metric-row">
               <span>Activation-Ready Contacts</span>
               <strong>{{ "{:,}".format(data.overview.activation_ready_contacts or 0) }}</strong>
+            </div>
+            <div class="metric-row">
+              <span>Marketing-Ready Contacts</span>
+              <strong>{{ "{:,}".format(data.overview.marketing_ready_contacts or 0) }}</strong>
+            </div>
+            <div class="metric-row">
+              <span>Sales-Ready Leads</span>
+              <strong>{{ "{:,}".format(data.overview.sales_ready_leads or 0) }}</strong>
+            </div>
+            <div class="metric-row">
+              <span>Current Clients</span>
+              <strong>{{ "{:,}".format(data.overview.current_client_contacts or 0) }}</strong>
+            </div>
+            <div class="metric-row">
+              <span>Canada Contacts</span>
+              <strong>{{ "{:,}".format(data.overview.canada_contacts or 0) }}</strong>
             </div>
             <div class="metric-row">
               <span>Pipeline Runs Logged</span>

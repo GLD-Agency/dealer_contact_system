@@ -525,43 +525,6 @@ class CampaignMonitorService:
         """Load deduped, marketing-ready subscribers from BigQuery."""
 
         query = f"""
-        WITH ranked_contacts AS (
-          SELECT
-            pc.prospect_contact_id,
-            pc.email,
-            COALESCE(NULLIF(TRIM(pc.full_name), ''), CONCAT(COALESCE(pc.first_name, ''), ' ', COALESCE(pc.last_name, ''))) AS full_name,
-            COALESCE(NULLIF(TRIM(pc.role_family), ''), 'unclassified') AS role_family,
-            da.account_name AS dealer_name,
-            COALESCE(da.inferred_brand, 'Unknown') AS oem,
-            COALESCE(da.account_city, '') AS city,
-            COALESCE(da.account_state, '') AS state,
-            COALESCE(NULLIF(TRIM(pc.country), ''), 'United States') AS country,
-            COALESCE(NULLIF(TRIM(pc.market), ''), 'US') AS market,
-            COALESCE(NULLIF(TRIM(pc.audience_type), ''), 'prospect') AS audience_type,
-            COALESCE(NULLIF(TRIM(pc.source_file_name), ''), pc.source_table, 'contact_master') AS source_list,
-            COALESCE(da.dealer_classification, '') AS dealer_classification,
-            COALESCE(pc.confidence_score, 0) AS confidence_score,
-            ROW_NUMBER() OVER (
-              PARTITION BY LOWER(pc.email)
-              ORDER BY COALESCE(pc.confidence_score, 0) DESC, pc.last_seen_at DESC NULLS LAST, pc.created_at DESC
-            ) AS row_number
-          FROM `{self.settings.prospect_contacts_table_fqn}` AS pc
-          JOIN `{self.settings.account_relationships_table_fqn}` AS ar
-            ON ar.prospect_contact_id = pc.prospect_contact_id
-          JOIN `{self.settings.dealer_accounts_table_fqn}` AS da
-            ON da.dealer_account_id = ar.dealer_account_id
-          WHERE pc.email IS NOT NULL
-            AND TRIM(pc.email) != ''
-            AND COALESCE(pc.is_personal_email, FALSE) = FALSE
-            AND LOWER(COALESCE(pc.contact_status, 'active')) NOT IN ('inactive', 'suppressed', 'invalid')
-            AND COALESCE(pc.activation_status, 'enrichment_needed') = 'activation_ready'
-            AND (
-              da.dealer_classification IN ('dealer', 'dealer_group')
-              OR pc.source_table = '{self.settings.external_seed_contacts_table}'
-              OR pc.audience_type = 'current_client'
-              OR pc.country = 'Canada'
-            )
-        )
         SELECT
           email,
           TRIM(full_name) AS full_name,
@@ -575,8 +538,7 @@ class CampaignMonitorService:
           audience_type,
           source_list,
           dealer_classification
-        FROM ranked_contacts
-        WHERE row_number = 1
+        FROM `{self.settings.marketing_ready_contacts_view_fqn}`
         ORDER BY oem ASC, dealer_name ASC, email ASC
         LIMIT {int(limit)}
         """

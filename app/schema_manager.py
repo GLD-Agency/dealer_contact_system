@@ -171,6 +171,8 @@ class SchemaManager:
               validated_dealers INT64,
               validated_dealer_groups INT64,
               activation_ready_accounts INT64,
+              marketing_ready_contacts INT64,
+              sales_ready_leads INT64,
               validated_websites INT64,
               enriched_websites INT64,
               prospect_contacts INT64,
@@ -219,6 +221,7 @@ class SchemaManager:
             self.repository.execute_statement(statement)
 
         self._ensure_optional_columns()
+        self._ensure_views()
 
     def _ensure_optional_columns(self) -> None:
         """Add newly introduced columns without rewriting any tables."""
@@ -273,6 +276,8 @@ class SchemaManager:
             f"ALTER TABLE `{self.settings.pipeline_runs_table_fqn}` ADD COLUMN IF NOT EXISTS started_at TIMESTAMP",
             f"ALTER TABLE `{self.settings.pipeline_runs_table_fqn}` ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP",
             f"ALTER TABLE `{self.settings.dashboard_snapshots_table_fqn}` ADD COLUMN IF NOT EXISTS activation_ready_accounts INT64",
+            f"ALTER TABLE `{self.settings.dashboard_snapshots_table_fqn}` ADD COLUMN IF NOT EXISTS marketing_ready_contacts INT64",
+            f"ALTER TABLE `{self.settings.dashboard_snapshots_table_fqn}` ADD COLUMN IF NOT EXISTS sales_ready_leads INT64",
             f"ALTER TABLE `{self.settings.dashboard_snapshots_table_fqn}` ADD COLUMN IF NOT EXISTS activation_ready_contacts INT64",
             f"ALTER TABLE `{self.settings.dashboard_snapshots_table_fqn}` ADD COLUMN IF NOT EXISTS current_client_contacts INT64",
             f"ALTER TABLE `{self.settings.dashboard_snapshots_table_fqn}` ADD COLUMN IF NOT EXISTS canada_contacts INT64",
@@ -299,3 +304,105 @@ class SchemaManager:
 
         for statement in alter_statements:
             self.repository.execute_statement(statement)
+
+    def _ensure_views(self) -> None:
+        """Create or replace activation views used by downstream syncs."""
+
+        marketing_ready_view = f"""
+        CREATE OR REPLACE VIEW `{self.settings.marketing_ready_contacts_view_fqn}` AS
+        WITH ranked_contacts AS (
+          SELECT
+            pc.prospect_contact_id,
+            LOWER(pc.email) AS email,
+            COALESCE(NULLIF(TRIM(pc.full_name), ''), TRIM(CONCAT(COALESCE(pc.first_name, ''), ' ', COALESCE(pc.last_name, '')))) AS full_name,
+            COALESCE(NULLIF(TRIM(pc.first_name), ''), '') AS first_name,
+            COALESCE(NULLIF(TRIM(pc.last_name), ''), '') AS last_name,
+            COALESCE(NULLIF(TRIM(pc.role_family), ''), 'unclassified') AS role_family,
+            COALESCE(NULLIF(TRIM(pc.role_title), ''), '') AS role_title,
+            COALESCE(NULLIF(TRIM(pc.audience_type), ''), 'prospect') AS audience_type,
+            COALESCE(NULLIF(TRIM(pc.market), ''), IF(pc.country = 'Canada', 'Canada', 'US')) AS market,
+            COALESCE(NULLIF(TRIM(pc.country), ''), 'United States') AS country,
+            COALESCE(NULLIF(TRIM(pc.source_file_name), ''), pc.source_table, 'contact_master') AS source_list,
+            COALESCE(NULLIF(TRIM(da.account_name), ''), da.account_key, '') AS dealer_name,
+            COALESCE(NULLIF(TRIM(da.inferred_brand), ''), 'Unknown') AS oem,
+            COALESCE(NULLIF(TRIM(da.account_city), ''), '') AS city,
+            COALESCE(NULLIF(TRIM(da.account_state), ''), '') AS state,
+            COALESCE(NULLIF(TRIM(da.dealer_classification), ''), 'unclassified') AS dealer_classification,
+            COALESCE(NULLIF(TRIM(da.website_url), ''), '') AS website_url,
+            COALESCE(pc.confidence_score, 0.0) AS contact_confidence_score,
+            COALESCE(da.confidence_score, 0.0) AS account_confidence_score,
+            CASE
+              WHEN pc.source_type = 'website_contact_extraction' THEN 'website_extracted'
+              WHEN pc.country = 'Canada' THEN 'canada_seed'
+              WHEN pc.audience_type = 'current_client' THEN 'current_client_seed'
+              WHEN pc.source_table = '{self.settings.external_seed_contacts_table}' THEN 'external_seed'
+              ELSE 'canonical'
+            END AS readiness_source,
+            pc.source_type,
+            pc.source_url,
+            da.source_type AS account_source_type,
+            da.source_table AS account_source_table,
+            ROW_NUMBER() OVER (
+              PARTITION BY LOWER(pc.email)
+              ORDER BY
+                CASE
+                  WHEN pc.source_type = 'website_contact_extraction' THEN 4
+                  WHEN da.dealer_classification IN ('dealer', 'dealer_group') THEN 3
+                  WHEN pc.audience_type = 'current_client' THEN 2
+                  ELSE 1
+                END DESC,
+                COALESCE(pc.confidence_score, 0) DESC,
+                pc.last_seen_at DESC NULLS LAST,
+                pc.created_at DESC
+            ) AS row_number
+          FROM `{self.settings.prospect_contacts_table_fqn}` AS pc
+          JOIN `{self.settings.account_relationships_table_fqn}` AS ar
+            ON ar.prospect_contact_id = pc.prospect_contact_id
+          JOIN `{self.settings.dealer_accounts_table_fqn}` AS da
+            ON da.dealer_account_id = ar.dealer_account_id
+          WHERE pc.email IS NOT NULL
+            AND TRIM(pc.email) != ''
+            AND COALESCE(pc.is_personal_email, FALSE) = FALSE
+            AND LOWER(COALESCE(pc.contact_status, 'active')) NOT IN ('inactive', 'suppressed', 'invalid')
+            AND COALESCE(pc.activation_status, 'enrichment_needed') = 'activation_ready'
+        )
+        SELECT
+          prospect_contact_id,
+          email,
+          full_name,
+          first_name,
+          last_name,
+          role_family,
+          role_title,
+          audience_type,
+          market,
+          country,
+          source_list,
+          dealer_name,
+          oem,
+          city,
+          state,
+          dealer_classification,
+          website_url,
+          contact_confidence_score,
+          account_confidence_score,
+          readiness_source,
+          source_type,
+          source_url,
+          account_source_type,
+          account_source_table
+        FROM ranked_contacts
+        WHERE row_number = 1
+        """
+
+        sales_ready_view = f"""
+        CREATE OR REPLACE VIEW `{self.settings.sales_ready_leads_view_fqn}` AS
+        SELECT
+          *
+        FROM `{self.settings.marketing_ready_contacts_view_fqn}`
+        WHERE audience_type != 'current_client'
+          AND dealer_classification IN ('dealer', 'dealer_group')
+        """
+
+        self.repository.execute_statement(marketing_ready_view)
+        self.repository.execute_statement(sales_ready_view)

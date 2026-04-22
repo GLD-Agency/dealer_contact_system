@@ -552,6 +552,8 @@ def print_report(repository: BigQueryRepository, settings: Settings) -> None:
       (SELECT COUNTIF(dealer_classification = 'dealer') FROM `{settings.dealer_accounts_table_fqn}`) AS validated_dealers,
       (SELECT COUNTIF(dealer_classification = 'dealer_group') FROM `{settings.dealer_accounts_table_fqn}`) AS validated_dealer_groups,
       (SELECT COUNTIF(activation_status = 'activation_ready') FROM `{settings.dealer_accounts_table_fqn}`) AS activation_ready_accounts,
+      (SELECT COUNT(*) FROM `{settings.marketing_ready_contacts_view_fqn}`) AS marketing_ready_contacts,
+      (SELECT COUNT(*) FROM `{settings.sales_ready_leads_view_fqn}`) AS sales_ready_leads,
       (SELECT COUNTIF(dealer_classification = 'vendor') FROM `{settings.dealer_accounts_table_fqn}`) AS validated_vendors,
       (SELECT COUNTIF(dealer_classification = 'non_dealer') FROM `{settings.dealer_accounts_table_fqn}`) AS validated_non_dealers,
       (SELECT COUNTIF(dealer_classification = 'oem') FROM `{settings.dealer_accounts_table_fqn}`) AS validated_oems,
@@ -590,6 +592,8 @@ def print_report(repository: BigQueryRepository, settings: Settings) -> None:
     print(f"Validated dealers: {report.get('validated_dealers', 0)}")
     print(f"Validated dealer groups: {report.get('validated_dealer_groups', 0)}")
     print(f"Activation-ready accounts: {report.get('activation_ready_accounts', 0)}")
+    print(f"Marketing-ready contacts: {report.get('marketing_ready_contacts', 0)}")
+    print(f"Sales-ready leads: {report.get('sales_ready_leads', 0)}")
     print(f"Validated vendors: {report.get('validated_vendors', 0)}")
     print(f"Validated non-dealers: {report.get('validated_non_dealers', 0)}")
     print(f"Validated OEMs: {report.get('validated_oems', 0)}")

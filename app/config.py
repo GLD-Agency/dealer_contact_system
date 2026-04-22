@@ -30,6 +30,8 @@ class Settings:
     pipeline_runs_table: str
     dashboard_snapshots_table: str
     external_seed_contacts_table: str
+    marketing_ready_contacts_view: str
+    sales_ready_leads_view: str
     external_seed_directory: str
     enrichment_batch_size: int
     worker_batch_size: int
@@ -109,6 +111,18 @@ class Settings:
 
         return self.table_fqn(self.external_seed_contacts_table)
 
+    @property
+    def marketing_ready_contacts_view_fqn(self) -> str:
+        """Return the fully qualified marketing-ready contacts view name."""
+
+        return self.table_fqn(self.marketing_ready_contacts_view)
+
+    @property
+    def sales_ready_leads_view_fqn(self) -> str:
+        """Return the fully qualified sales-ready leads view name."""
+
+        return self.table_fqn(self.sales_ready_leads_view)
+
     def table_fqn(self, table_name: str) -> str:
         """Build a fully qualified BigQuery table name."""
 
@@ -134,6 +148,8 @@ def get_settings() -> Settings:
         pipeline_runs_table=os.getenv("PIPELINE_RUNS_TABLE", "pipeline_runs"),
         dashboard_snapshots_table=os.getenv("DASHBOARD_SNAPSHOTS_TABLE", "dashboard_snapshots"),
         external_seed_contacts_table=os.getenv("EXTERNAL_SEED_CONTACTS_TABLE", "external_seed_contacts"),
+        marketing_ready_contacts_view=os.getenv("MARKETING_READY_CONTACTS_VIEW", "marketing_ready_contacts"),
+        sales_ready_leads_view=os.getenv("SALES_READY_LEADS_VIEW", "sales_ready_leads"),
         external_seed_directory=os.getenv(
             "EXTERNAL_SEED_DIRECTORY",
             str(Path.home() / "Downloads"),

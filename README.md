@@ -130,6 +130,8 @@ gcloud auth application-default login
 - `ACCOUNT_WORK_QUEUE_TABLE`: BigQuery work queue table for brute-force workers
 - `PIPELINE_RUNS_TABLE`: BigQuery run log for worker execution
 - `DASHBOARD_SNAPSHOTS_TABLE`: BigQuery snapshot table for dashboard trend history
+- `MARKETING_READY_CONTACTS_VIEW`: BigQuery view used for activation-safe marketing syncs
+- `SALES_READY_LEADS_VIEW`: BigQuery view used for tighter outbound sales lead review
 - `WORKER_BATCH_SIZE`: Default account batch size for queue-driven workers
 - `WORKER_LEASE_MINUTES`: How long a worker lease remains valid before another worker can retry it
 - `VALIDATE_WORKER_BATCH_SIZE`: Batch size for one queue-cycle validation step
@@ -483,6 +485,15 @@ The setup command creates:
 - `sync_targets`
 - `account_work_queue`
 - `pipeline_runs`
+
+The setup command also creates two downstream activation views:
+
+- `marketing_ready_contacts`
+- `sales_ready_leads`
+
+`marketing_ready_contacts` is the formal activation layer for downstream systems like Campaign Monitor. It dedupes business-email contacts that are safe to use now, even when deeper crawl enrichment is still pending.
+
+`sales_ready_leads` is the tighter lead view for outreach workflows. It excludes current clients and focuses on validated `dealer` and `dealer_group` accounts.
 
 The normalization pipeline uses stable SHA256-based IDs to support safe reruns:
 
