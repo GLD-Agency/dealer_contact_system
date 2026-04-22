@@ -117,7 +117,6 @@ class LowRiskEnrichmentService:
           END,
           activation_status = CASE
             WHEN LOWER(COALESCE(pc.contact_status, 'active')) IN ('inactive', 'suppressed', 'invalid') THEN 'hold'
-            WHEN COALESCE(pc.is_personal_email, FALSE) = TRUE THEN 'hold'
             WHEN pc.source_type = 'website_contact_extraction'
                  AND pc.role_title IS NOT NULL
                  AND TRIM(pc.role_title) != ''
@@ -133,6 +132,13 @@ class LowRiskEnrichmentService:
                  AND TRIM(pc.email_domain) != ''
                  AND pc.audience_type IS NOT NULL
                  AND TRIM(pc.audience_type) != ''
+              THEN 'activation_ready'
+            WHEN COALESCE(pc.is_personal_email, FALSE) = TRUE
+                 AND (
+                   pc.audience_type = 'current_client'
+                   OR pc.country = 'Canada'
+                   OR pc.source_table = '{self.settings.external_seed_contacts_table}'
+                 )
               THEN 'activation_ready'
             ELSE 'enrichment_needed'
           END,

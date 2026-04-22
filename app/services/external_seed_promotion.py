@@ -98,11 +98,11 @@ class ExternalSeedPromotionService:
             MAX(
               CASE source_group
                 WHEN 'current_clients' THEN 0.95
+                WHEN 'engagement_list' THEN 0.85
                 WHEN 'oem_seed' THEN 0.80
                 WHEN 'canada_oem_seed' THEN 0.80
                 WHEN 'industry_seed' THEN 0.70
                 WHEN 'combined_subscribers' THEN 0.60
-                WHEN 'engagement_list' THEN 0.55
                 WHEN 'automotive_services' THEN 0.55
                 ELSE 0.50
               END
@@ -203,11 +203,11 @@ class ExternalSeedPromotionService:
             MAX(
               CASE source_group
                 WHEN 'current_clients' THEN 0.95
+                WHEN 'engagement_list' THEN 0.85
                 WHEN 'oem_seed' THEN 0.80
                 WHEN 'canada_oem_seed' THEN 0.80
                 WHEN 'industry_seed' THEN 0.70
                 WHEN 'combined_subscribers' THEN 0.60
-                WHEN 'engagement_list' THEN 0.55
                 WHEN 'automotive_services' THEN 0.55
                 ELSE 0.50
               END
@@ -342,11 +342,11 @@ class ExternalSeedPromotionService:
             MAX(
               CASE source_group
                 WHEN 'current_clients' THEN 0.95
+                WHEN 'engagement_list' THEN 0.85
                 WHEN 'oem_seed' THEN 0.80
                 WHEN 'canada_oem_seed' THEN 0.80
                 WHEN 'industry_seed' THEN 0.70
                 WHEN 'combined_subscribers' THEN 0.60
-                WHEN 'engagement_list' THEN 0.55
                 WHEN 'automotive_services' THEN 0.55
                 ELSE 0.50
               END

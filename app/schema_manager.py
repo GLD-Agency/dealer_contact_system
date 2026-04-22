@@ -317,6 +317,7 @@ class SchemaManager:
             COALESCE(NULLIF(TRIM(pc.full_name), ''), TRIM(CONCAT(COALESCE(pc.first_name, ''), ' ', COALESCE(pc.last_name, '')))) AS full_name,
             COALESCE(NULLIF(TRIM(pc.first_name), ''), '') AS first_name,
             COALESCE(NULLIF(TRIM(pc.last_name), ''), '') AS last_name,
+            COALESCE(pc.is_personal_email, FALSE) AS is_personal_email,
             COALESCE(NULLIF(TRIM(pc.role_family), ''), 'unclassified') AS role_family,
             COALESCE(NULLIF(TRIM(pc.role_title), ''), '') AS role_title,
             COALESCE(NULLIF(TRIM(pc.audience_type), ''), 'prospect') AS audience_type,
@@ -346,9 +347,12 @@ class SchemaManager:
               PARTITION BY LOWER(pc.email)
               ORDER BY
                 CASE
-                  WHEN pc.source_type = 'website_contact_extraction' THEN 4
-                  WHEN da.dealer_classification IN ('dealer', 'dealer_group') THEN 3
-                  WHEN pc.audience_type = 'current_client' THEN 2
+                  WHEN pc.source_type = 'website_contact_extraction' THEN 5
+                  WHEN pc.audience_type = 'current_client' THEN 4
+                  WHEN pc.source_file_name LIKE '%Openers%' THEN 3
+                  WHEN pc.source_file_name LIKE '%OpenEmailList%' THEN 3
+                  WHEN pc.country = 'Canada' THEN 3
+                  WHEN da.dealer_classification IN ('dealer', 'dealer_group') THEN 2
                   ELSE 1
                 END DESC,
                 COALESCE(pc.confidence_score, 0) DESC,
@@ -362,7 +366,6 @@ class SchemaManager:
             ON da.dealer_account_id = ar.dealer_account_id
           WHERE pc.email IS NOT NULL
             AND TRIM(pc.email) != ''
-            AND COALESCE(pc.is_personal_email, FALSE) = FALSE
             AND LOWER(COALESCE(pc.contact_status, 'active')) NOT IN ('inactive', 'suppressed', 'invalid')
             AND COALESCE(pc.activation_status, 'enrichment_needed') = 'activation_ready'
         )
@@ -372,6 +375,7 @@ class SchemaManager:
           full_name,
           first_name,
           last_name,
+          is_personal_email,
           role_family,
           role_title,
           audience_type,
@@ -402,6 +406,8 @@ class SchemaManager:
         FROM `{self.settings.marketing_ready_contacts_view_fqn}`
         WHERE audience_type != 'current_client'
           AND dealer_classification IN ('dealer', 'dealer_group')
+          AND TRIM(full_name) != ''
+          AND TRIM(dealer_name) != ''
         """
 
         self.repository.execute_statement(marketing_ready_view)
