@@ -40,10 +40,14 @@ class Settings:
     worker_lease_minutes: int
     validate_worker_batch_size: int
     enrich_worker_batch_size: int
+    gbp_worker_batch_size: int
     extract_worker_batch_size: int
     retry_blocked_worker_batch_size: int
     campaign_monitor_sync_batch_size: int
     campaign_monitor_sync_enabled: bool
+    gbp_enrichment_enabled: bool
+    gbp_provider: str
+    gbp_search_endpoint: str
     managed_fetch_enabled: bool
     managed_fetch_provider: str
     managed_fetch_api_key: str | None
@@ -203,10 +207,14 @@ def get_settings() -> Settings:
         worker_lease_minutes=int(os.getenv("WORKER_LEASE_MINUTES", "30")),
         validate_worker_batch_size=int(os.getenv("VALIDATE_WORKER_BATCH_SIZE", "50")),
         enrich_worker_batch_size=int(os.getenv("ENRICH_WORKER_BATCH_SIZE", "25")),
+        gbp_worker_batch_size=int(os.getenv("GBP_WORKER_BATCH_SIZE", "25")),
         extract_worker_batch_size=int(os.getenv("EXTRACT_WORKER_BATCH_SIZE", "25")),
         retry_blocked_worker_batch_size=int(os.getenv("RETRY_BLOCKED_WORKER_BATCH_SIZE", "10")),
         campaign_monitor_sync_batch_size=int(os.getenv("CAMPAIGN_MONITOR_SYNC_BATCH_SIZE", "100")),
         campaign_monitor_sync_enabled=os.getenv("CAMPAIGN_MONITOR_SYNC_ENABLED", "false").lower() == "true",
+        gbp_enrichment_enabled=os.getenv("GBP_ENRICHMENT_ENABLED", "true").lower() == "true",
+        gbp_provider=os.getenv("GBP_PROVIDER", "duckduckgo_search_fallback"),
+        gbp_search_endpoint=os.getenv("GBP_SEARCH_ENDPOINT", "https://html.duckduckgo.com/html/"),
         managed_fetch_enabled=os.getenv("MANAGED_FETCH_ENABLED", "false").lower() == "true",
         managed_fetch_provider=os.getenv("MANAGED_FETCH_PROVIDER", "none"),
         managed_fetch_api_key=os.getenv("MANAGED_FETCH_API_KEY"),

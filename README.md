@@ -23,7 +23,7 @@ Phase 2 foundation for a dealer contact pipeline that uses BigQuery as the sourc
 - CLI commands for setup, normalize, and report
 - Helper scripts for connection checks and operational entry points
 
-This version includes Campaign Monitor sync and prospect lead materialization. Meta, Google Ads, and live managed anti-bot provider execution are still scaffolded rather than fully activated.
+This version includes Campaign Monitor sync, prospect lead materialization, and a fallback GBP enrichment lane for phone and address recovery. Meta, Google Ads, and live managed anti-bot provider execution are still scaffolded rather than fully activated.
 
 ## Current Data Flow
 
@@ -141,10 +141,14 @@ gcloud auth application-default login
 - `WORKER_LEASE_MINUTES`: How long a worker lease remains valid before another worker can retry it
 - `VALIDATE_WORKER_BATCH_SIZE`: Batch size for one queue-cycle validation step
 - `ENRICH_WORKER_BATCH_SIZE`: Batch size for one queue-cycle enrichment step
+- `GBP_WORKER_BATCH_SIZE`: Batch size for one queue-cycle GBP enrichment step
 - `EXTRACT_WORKER_BATCH_SIZE`: Batch size for one queue-cycle contact extraction step
 - `RETRY_BLOCKED_WORKER_BATCH_SIZE`: Batch size for one queue-cycle blocked-site retry step
 - `CAMPAIGN_MONITOR_SYNC_BATCH_SIZE`: Subscriber batch size for one Campaign Monitor sync step
 - `CAMPAIGN_MONITOR_SYNC_ENABLED`: Whether the queue cycle should push subscribers into Campaign Monitor
+- `GBP_ENRICHMENT_ENABLED`: Whether the fallback GBP enrichment lane should run
+- `GBP_PROVIDER`: Label for the search/provider fallback used for GBP-style enrichment
+- `GBP_SEARCH_ENDPOINT`: Search HTML endpoint used by the fallback GBP lane
 - `MANAGED_FETCH_ENABLED`: Whether the hard-blocked managed escalation lane is configured
 - `MANAGED_FETCH_PROVIDER`: Label for the anti-bot provider being used or planned
 - `MANAGED_FETCH_MIN_BLOCKED_ATTEMPTS`: Blocked-attempt threshold before escalation eligibility
@@ -184,11 +188,14 @@ python -m app seed-work-queue --task-type all
 python -m app run-worker --task-type validate --dry-run
 python -m app run-worker --task-type validate --batch-size 50
 python -m app run-worker --task-type enrich --batch-size 25
+python -m app run-worker --task-type enrich_gbp --batch-size 25
 python -m app run-worker --task-type extract_contacts --batch-size 25
 python -m app run-worker --task-type retry_blocked --batch-size 10
 python -m app run-queue-cycle --seed --dry-run
 python -m app run-queue-cycle --seed
 python -m app capture-dashboard-snapshot
+python -m app refresh-gbp-enrichment --dry-run --limit 25
+python -m app refresh-gbp-enrichment --limit 25
 python -m app refresh-prospect-leads --dry-run
 python -m app refresh-prospect-leads
 python -m app refresh-client-dim --dry-run
@@ -224,11 +231,14 @@ python main.py seed-work-queue --task-type all
 python main.py run-worker --task-type validate --dry-run
 python main.py run-worker --task-type validate --batch-size 50
 python main.py run-worker --task-type enrich --batch-size 25
+python main.py run-worker --task-type enrich_gbp --batch-size 25
 python main.py run-worker --task-type extract_contacts --batch-size 25
 python main.py run-worker --task-type retry_blocked --batch-size 10
 python main.py run-queue-cycle --seed --dry-run
 python main.py run-queue-cycle --seed
 python main.py capture-dashboard-snapshot
+python main.py refresh-gbp-enrichment --dry-run --limit 25
+python main.py refresh-gbp-enrichment --limit 25
 python main.py refresh-prospect-leads --dry-run
 python main.py refresh-prospect-leads
 python main.py refresh-client-dim --dry-run
@@ -367,6 +377,7 @@ python main.py seed-work-queue --task-type all
 ```bash
 python main.py run-worker --task-type validate --batch-size 50
 python main.py run-worker --task-type enrich --batch-size 25
+python main.py run-worker --task-type enrich_gbp --batch-size 25
 python main.py run-worker --task-type extract_contacts --batch-size 25
 python main.py run-worker --task-type retry_blocked --batch-size 10
 python main.py report
@@ -389,8 +400,9 @@ That command runs:
 
 1. `validate`
 2. `enrich`
-3. `extract_contacts`
-4. `retry_blocked`
+3. `enrich_gbp`
+4. `extract_contacts`
+5. `retry_blocked`
 
 using the environment-configured worker batch sizes.
 
@@ -496,6 +508,7 @@ Once that is in place:
 - Cloud Build / GitHub Actions become the deployment path
 - Cloud Run + Scheduler keep the worker running
 - your laptop is only a development environment, not the production control plane
+- GBP enrichment can be used as a lower-cost fallback for blocked sites before escalating to a managed anti-bot provider
 
 ## Canonical Tables
 

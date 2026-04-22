@@ -7,6 +7,7 @@ param(
     [string]$ServiceAccountEmail,
     [int]$ValidateBatchSize = 50,
     [int]$EnrichBatchSize = 25,
+    [int]$GbpBatchSize = 25,
     [int]$ExtractBatchSize = 25,
     [int]$RetryBlockedBatchSize = 10,
     [int]$CampaignMonitorSyncBatchSize = 100,
@@ -27,6 +28,7 @@ $envVars = @(
     "BIGQUERY_DATASET=dealer_data",
     "VALIDATE_WORKER_BATCH_SIZE=$ValidateBatchSize",
     "ENRICH_WORKER_BATCH_SIZE=$EnrichBatchSize",
+    "GBP_WORKER_BATCH_SIZE=$GbpBatchSize",
     "EXTRACT_WORKER_BATCH_SIZE=$ExtractBatchSize",
     "RETRY_BLOCKED_WORKER_BATCH_SIZE=$RetryBlockedBatchSize",
     "CAMPAIGN_MONITOR_SYNC_BATCH_SIZE=$CampaignMonitorSyncBatchSize",
@@ -44,6 +46,15 @@ if ($env:CAMPAIGN_MONITOR_MASTER_LIST_NAME) {
 }
 if ($env:MANAGED_FETCH_ENABLED) {
     $envVars = "$envVars,MANAGED_FETCH_ENABLED=$($env:MANAGED_FETCH_ENABLED)"
+}
+if ($env:GBP_ENRICHMENT_ENABLED) {
+    $envVars = "$envVars,GBP_ENRICHMENT_ENABLED=$($env:GBP_ENRICHMENT_ENABLED)"
+}
+if ($env:GBP_PROVIDER) {
+    $envVars = "$envVars,GBP_PROVIDER=$($env:GBP_PROVIDER)"
+}
+if ($env:GBP_SEARCH_ENDPOINT) {
+    $envVars = "$envVars,GBP_SEARCH_ENDPOINT=$($env:GBP_SEARCH_ENDPOINT)"
 }
 if ($env:MANAGED_FETCH_PROVIDER) {
     $envVars = "$envVars,MANAGED_FETCH_PROVIDER=$($env:MANAGED_FETCH_PROVIDER)"

@@ -90,13 +90,15 @@ class ProspectLeadService:
             COALESCE(NULLIF(TRIM(da.account_name), ''), da.account_key) AS dealer_name,
             da.account_key,
             da.website_url,
-            da.account_city AS city,
-            da.account_state AS state,
-            COALESCE(NULLIF(TRIM(pc.country), ''), 'United States') AS country,
+            COALESCE(NULLIF(TRIM(da.account_city), ''), NULLIF(TRIM(da.gbp_city), '')) AS city,
+            COALESCE(NULLIF(TRIM(da.account_state), ''), NULLIF(TRIM(da.gbp_state_or_province), '')) AS state,
+            NULLIF(TRIM(da.gbp_address_line), '') AS address_line,
+            NULLIF(TRIM(da.gbp_postal_code), '') AS postal_code,
+            COALESCE(NULLIF(TRIM(pc.country), ''), NULLIF(TRIM(da.gbp_country), ''), 'United States') AS country,
             COALESCE(
               NULLIF(TRIM(pc.market), ''),
               CASE
-                WHEN COALESCE(NULLIF(TRIM(pc.country), ''), 'United States') = 'Canada' THEN 'Canada'
+                WHEN COALESCE(NULLIF(TRIM(pc.country), ''), NULLIF(TRIM(da.gbp_country), ''), 'United States') = 'Canada' THEN 'Canada'
                 ELSE 'US'
               END
             ) AS market,
@@ -120,6 +122,11 @@ class ProspectLeadService:
               WHEN NULLIF(TRIM(da.gbp_phone), '') IS NOT NULL THEN 'gbp'
               ELSE NULL
             END) AS best_phone_source,
+            CASE
+              WHEN NULLIF(TRIM(da.account_city), '') IS NOT NULL OR NULLIF(TRIM(da.account_state), '') IS NOT NULL THEN 'website'
+              WHEN NULLIF(TRIM(da.gbp_address_line), '') IS NOT NULL OR NULLIF(TRIM(da.gbp_city), '') IS NOT NULL THEN 'gbp'
+              ELSE NULL
+            END AS best_location_source,
             COALESCE(pc.confidence_score, 0.0) AS contact_confidence_score,
             COALESCE(da.confidence_score, 0.0) AS account_confidence_score,
             FALSE AS dim_client_match_flag,
@@ -164,6 +171,8 @@ class ProspectLeadService:
           website_url,
           city,
           state,
+          address_line,
+          postal_code,
           country,
           market,
           oem,
@@ -191,6 +200,7 @@ class ProspectLeadService:
           country = 'Canada' AS is_canada,
           website_phone,
           gbp_phone,
+          best_location_source,
           best_phone,
           best_phone_source,
           contact_confidence_score,

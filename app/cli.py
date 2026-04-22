@@ -20,6 +20,7 @@ from app.services.contact_extraction import ContactExtractionService
 from app.services.dealer_validation import DealerValidationService
 from app.services.external_seed_import import ExternalSeedImportService
 from app.services.external_seed_promotion import ExternalSeedPromotionService
+from app.services.gbp_enrichment import GbpEnrichmentService
 from app.services.low_risk_enrichment import LowRiskEnrichmentService
 from app.services.managed_fetch import ManagedFetchService
 from app.services.normalization import NormalizationService
@@ -234,6 +235,27 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Preview low-risk enrichment counts without writing any updates.",
     )
+    gbp_parser = subparsers.add_parser(
+        "refresh-gbp-enrichment",
+        help="Enrich dealer accounts with fallback GBP-style phone and address signals.",
+    )
+    gbp_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview GBP enrichment without writing any updates.",
+    )
+    gbp_parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Override the default GBP enrichment batch size for this run.",
+    )
+    gbp_parser.add_argument(
+        "--account-key",
+        action="append",
+        default=None,
+        help="Enrich one or more specific account_key values with GBP fallback data.",
+    )
     prospect_leads_parser = subparsers.add_parser(
         "refresh-prospect-leads",
         help="Refresh the materialized prospect lead table from canonical data.",
@@ -322,6 +344,7 @@ def main() -> None:
     external_seed_import_service = ExternalSeedImportService(repository, settings)
     external_seed_promotion_service = ExternalSeedPromotionService(repository, settings)
     low_risk_enrichment_service = LowRiskEnrichmentService(repository, settings)
+    gbp_enrichment_service = GbpEnrichmentService(repository, settings)
     prospect_lead_service = ProspectLeadService(repository, settings)
     client_dim_service = ClientDimService(repository, settings)
     managed_fetch_service = ManagedFetchService(repository, settings)
@@ -418,6 +441,11 @@ def main() -> None:
             dry_run=args.dry_run,
         )
         work_queue_service.run_worker(
+            task_type="enrich_gbp",
+            batch_size=settings.gbp_worker_batch_size,
+            dry_run=args.dry_run,
+        )
+        work_queue_service.run_worker(
             task_type="retry_blocked",
             batch_size=settings.retry_blocked_worker_batch_size,
             dry_run=args.dry_run,
@@ -507,6 +535,19 @@ def main() -> None:
         schema_manager.ensure_tables()
         low_risk_enrichment_service.run(dry_run=args.dry_run)
         logger.info("Low-risk enrichment command complete.")
+        return
+
+    if args.command == "refresh-gbp-enrichment":
+        schema_manager.ensure_tables()
+        result = gbp_enrichment_service.enrich(
+            dry_run=args.dry_run,
+            limit=args.limit,
+            account_keys=args.account_key,
+        )
+        logger.info("GBP enrichment command complete | status=%s | detail=%s", result.status, result.detail)
+        print(f"GBP enrichment status: {result.status}")
+        print(result.detail)
+        print(f"Enriched accounts: {result.enriched_accounts}")
         return
 
     if args.command == "refresh-prospect-leads":
@@ -632,6 +673,8 @@ def print_report(repository: BigQueryRepository, settings: Settings) -> None:
       (SELECT COUNTIF(account_phone IS NOT NULL AND TRIM(account_phone) != '') FROM `{settings.dealer_accounts_table_fqn}`) AS accounts_with_phone,
       (SELECT COUNTIF(website_phone IS NOT NULL AND TRIM(website_phone) != '') FROM `{settings.dealer_accounts_table_fqn}`) AS accounts_with_website_phone,
       (SELECT COUNTIF(gbp_phone IS NOT NULL AND TRIM(gbp_phone) != '') FROM `{settings.dealer_accounts_table_fqn}`) AS accounts_with_gbp_phone,
+      (SELECT COUNTIF(gbp_address_line IS NOT NULL AND TRIM(gbp_address_line) != '') FROM `{settings.dealer_accounts_table_fqn}`) AS accounts_with_gbp_address,
+      (SELECT COUNTIF(best_phone_source = 'gbp' AND best_phone IS NOT NULL AND TRIM(best_phone) != '') FROM `{settings.dealer_accounts_table_fqn}`) AS accounts_with_best_phone_from_gbp,
       (SELECT COUNTIF(activation_status = 'activation_ready') FROM `{settings.dealer_accounts_table_fqn}`) AS activation_ready_accounts,
       (SELECT COUNT(*) FROM `{settings.marketing_ready_contacts_view_fqn}`) AS marketing_ready_contacts,
       (SELECT COUNT(*) FROM `{settings.sales_ready_leads_view_fqn}`) AS sales_ready_leads,
@@ -652,6 +695,7 @@ def print_report(repository: BigQueryRepository, settings: Settings) -> None:
       (SELECT COUNT(*) FROM `{settings.sync_targets_table_fqn}`) AS sync_targets,
       (SELECT COUNTIF(task_type = 'validate' AND status IN ('pending', 'retry')) FROM `{settings.account_work_queue_table_fqn}`) AS queued_validate,
       (SELECT COUNTIF(task_type = 'enrich' AND status IN ('pending', 'retry')) FROM `{settings.account_work_queue_table_fqn}`) AS queued_enrich,
+      (SELECT COUNTIF(task_type = 'enrich_gbp' AND status IN ('pending', 'retry')) FROM `{settings.account_work_queue_table_fqn}`) AS queued_enrich_gbp,
       (SELECT COUNTIF(task_type = 'extract_contacts' AND status IN ('pending', 'retry')) FROM `{settings.account_work_queue_table_fqn}`) AS queued_extract_contacts,
       (SELECT COUNTIF(task_type = 'retry_blocked' AND status IN ('pending', 'retry')) FROM `{settings.account_work_queue_table_fqn}`) AS queued_retry_blocked,
       (SELECT COUNTIF(status = 'in_progress') FROM `{settings.account_work_queue_table_fqn}`) AS queue_in_progress,
@@ -679,6 +723,8 @@ def print_report(repository: BigQueryRepository, settings: Settings) -> None:
     print(f"Accounts with phone: {report.get('accounts_with_phone', 0)}")
     print(f"Accounts with website phone: {report.get('accounts_with_website_phone', 0)}")
     print(f"Accounts with GBP phone: {report.get('accounts_with_gbp_phone', 0)}")
+    print(f"Accounts with GBP address: {report.get('accounts_with_gbp_address', 0)}")
+    print(f"Accounts with best phone from GBP: {report.get('accounts_with_best_phone_from_gbp', 0)}")
     print(f"Activation-ready accounts: {report.get('activation_ready_accounts', 0)}")
     print(f"Marketing-ready contacts: {report.get('marketing_ready_contacts', 0)}")
     print(f"Sales-ready leads: {report.get('sales_ready_leads', 0)}")
@@ -699,6 +745,7 @@ def print_report(repository: BigQueryRepository, settings: Settings) -> None:
     print(f"Sync targets: {report.get('sync_targets', 0)}")
     print(f"Queued validate tasks: {report.get('queued_validate', 0)}")
     print(f"Queued enrich tasks: {report.get('queued_enrich', 0)}")
+    print(f"Queued GBP enrich tasks: {report.get('queued_enrich_gbp', 0)}")
     print(f"Queued extract tasks: {report.get('queued_extract_contacts', 0)}")
     print(f"Queued blocked-site retry tasks: {report.get('queued_retry_blocked', 0)}")
     print(f"Queue items in progress: {report.get('queue_in_progress', 0)}")

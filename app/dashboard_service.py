@@ -67,6 +67,8 @@ class DashboardService:
           accounts_with_phone,
           accounts_with_website_phone,
           accounts_with_gbp_phone,
+          accounts_with_gbp_address,
+          accounts_with_best_phone_from_gbp,
           activation_ready_accounts,
           marketing_ready_contacts,
           sales_ready_leads,
@@ -98,6 +100,8 @@ class DashboardService:
           (SELECT COUNTIF(account_phone IS NOT NULL AND TRIM(account_phone) != '') FROM `{self.settings.dealer_accounts_table_fqn}`),
           (SELECT COUNTIF(website_phone IS NOT NULL AND TRIM(website_phone) != '') FROM `{self.settings.dealer_accounts_table_fqn}`),
           (SELECT COUNTIF(gbp_phone IS NOT NULL AND TRIM(gbp_phone) != '') FROM `{self.settings.dealer_accounts_table_fqn}`),
+          (SELECT COUNTIF(gbp_address_line IS NOT NULL AND TRIM(gbp_address_line) != '') FROM `{self.settings.dealer_accounts_table_fqn}`),
+          (SELECT COUNTIF(best_phone_source = 'gbp' AND best_phone IS NOT NULL AND TRIM(best_phone) != '') FROM `{self.settings.dealer_accounts_table_fqn}`),
           (SELECT COUNTIF(activation_status = 'activation_ready') FROM `{self.settings.dealer_accounts_table_fqn}`),
           (SELECT COUNT(*) FROM `{self.settings.marketing_ready_contacts_view_fqn}`),
           (SELECT COUNT(*) FROM `{self.settings.sales_ready_leads_view_fqn}`),
@@ -133,6 +137,8 @@ class DashboardService:
           (SELECT COUNTIF(account_phone IS NOT NULL AND TRIM(account_phone) != '') FROM `{self.settings.dealer_accounts_table_fqn}`) AS accounts_with_phone,
           (SELECT COUNTIF(website_phone IS NOT NULL AND TRIM(website_phone) != '') FROM `{self.settings.dealer_accounts_table_fqn}`) AS accounts_with_website_phone,
           (SELECT COUNTIF(gbp_phone IS NOT NULL AND TRIM(gbp_phone) != '') FROM `{self.settings.dealer_accounts_table_fqn}`) AS accounts_with_gbp_phone,
+          (SELECT COUNTIF(gbp_address_line IS NOT NULL AND TRIM(gbp_address_line) != '') FROM `{self.settings.dealer_accounts_table_fqn}`) AS accounts_with_gbp_address,
+          (SELECT COUNTIF(best_phone_source = 'gbp' AND best_phone IS NOT NULL AND TRIM(best_phone) != '') FROM `{self.settings.dealer_accounts_table_fqn}`) AS accounts_with_best_phone_from_gbp,
           (SELECT COUNTIF(activation_status = 'activation_ready') FROM `{self.settings.dealer_accounts_table_fqn}`) AS activation_ready_accounts,
           (SELECT COUNT(*) FROM `{self.settings.marketing_ready_contacts_view_fqn}`) AS marketing_ready_contacts,
           (SELECT COUNT(*) FROM `{self.settings.sales_ready_leads_view_fqn}`) AS sales_ready_leads,
@@ -170,6 +176,8 @@ class DashboardService:
           accounts_with_phone,
           accounts_with_website_phone,
           accounts_with_gbp_phone,
+          accounts_with_gbp_address,
+          accounts_with_best_phone_from_gbp,
           activation_ready_accounts,
           marketing_ready_contacts,
           sales_ready_leads,
@@ -208,6 +216,8 @@ class DashboardService:
           accounts_with_phone,
           accounts_with_website_phone,
           accounts_with_gbp_phone,
+          accounts_with_gbp_address,
+          accounts_with_best_phone_from_gbp,
           activation_ready_accounts,
           marketing_ready_contacts,
           sales_ready_leads,
@@ -245,6 +255,8 @@ class DashboardService:
           accounts_with_phone,
           accounts_with_website_phone,
           accounts_with_gbp_phone,
+          accounts_with_gbp_address,
+          accounts_with_best_phone_from_gbp,
           activation_ready_accounts,
           marketing_ready_contacts,
           sales_ready_leads,
@@ -278,6 +290,8 @@ class DashboardService:
             "accounts_with_phone": "Accounts With Phone",
             "accounts_with_website_phone": "Accounts With Website Phone",
             "accounts_with_gbp_phone": "Accounts With GBP Phone",
+            "accounts_with_gbp_address": "Accounts With GBP Address",
+            "accounts_with_best_phone_from_gbp": "Best Phone From GBP",
             "activation_ready_accounts": "Activation-Ready Accounts",
             "prospect_leads": "Prospect Leads",
             "marketing_ready_contacts": "Marketing-Ready Contacts",
@@ -331,6 +345,8 @@ class DashboardService:
             ("accounts_with_phone", "Accounts With Phone"),
             ("accounts_with_website_phone", "Website Phone Coverage"),
             ("accounts_with_gbp_phone", "GBP Phone Coverage"),
+            ("accounts_with_gbp_address", "GBP Address Coverage"),
+            ("accounts_with_best_phone_from_gbp", "Best Phone From GBP"),
             ("marketing_ready_contacts", "Marketing-Ready Contacts"),
             ("sales_ready_leads", "Sales-Ready Leads"),
             ("prospect_leads", "Prospect Leads"),
@@ -395,7 +411,7 @@ class DashboardService:
     def _get_connections(self, overview: dict[str, Any]) -> list[DashboardConnectionStatus]:
         """Create human-readable system health rows."""
 
-        system_statuses = self._get_named_system_statuses(("client_dim", "managed_fetch"))
+        system_statuses = self._get_named_system_statuses(("client_dim", "managed_fetch", "gbp_enrichment"))
         return [
             DashboardConnectionStatus(
                 name="BigQuery",
@@ -433,6 +449,15 @@ class DashboardService:
                 fallback_status="warning" if int(overview.get("managed_fetch_eligible_accounts", 0)) > 0 else "healthy",
                 fallback_detail=(
                     f"{int(overview.get('managed_fetch_eligible_accounts', 0)):,} hard blocked sites are eligible for escalation."
+                ),
+            ),
+            self._system_status_row(
+                name="GBP Enrichment",
+                sync_row=system_statuses.get("gbp_enrichment"),
+                fallback_status="healthy" if self.settings.gbp_enrichment_enabled else "warning",
+                fallback_detail=(
+                    f"{int(overview.get('accounts_with_gbp_phone', 0)):,} accounts have GBP phone coverage and "
+                    f"{int(overview.get('accounts_with_gbp_address', 0)):,} have GBP address coverage."
                 ),
             ),
         ]

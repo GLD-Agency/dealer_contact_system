@@ -12,17 +12,20 @@ from app.services.account_enrichment import AccountEnrichmentService
 from app.services.browser_retry import BrowserRetryService
 from app.services.contact_extraction import ContactExtractionService
 from app.services.dealer_validation import DealerValidationService
+from app.services.gbp_enrichment import GbpEnrichmentService
 
 
 logger = get_logger(__name__)
 
 TASK_VALIDATE = "validate"
 TASK_ENRICH = "enrich"
+TASK_ENRICH_GBP = "enrich_gbp"
 TASK_EXTRACT_CONTACTS = "extract_contacts"
 TASK_RETRY_BLOCKED = "retry_blocked"
 TASK_TYPES = [
     TASK_VALIDATE,
     TASK_ENRICH,
+    TASK_ENRICH_GBP,
     TASK_EXTRACT_CONTACTS,
     TASK_RETRY_BLOCKED,
 ]
@@ -129,6 +132,7 @@ class WorkQueueService:
         self.run_logger = PipelineRunLogger(repository, settings)
         self.dealer_validation = DealerValidationService(repository, settings)
         self.account_enrichment = AccountEnrichmentService(repository, settings)
+        self.gbp_enrichment = GbpEnrichmentService(repository, settings)
         self.contact_extraction = ContactExtractionService(repository, settings)
         self.browser_retry = BrowserRetryService(repository, settings)
 
@@ -392,6 +396,24 @@ class WorkQueueService:
                 OR account_state IS NULL
               )
             """
+        if task_type == TASK_ENRICH_GBP:
+            return f"""
+            SELECT
+              '{TASK_ENRICH_GBP}' AS task_type,
+              account_key,
+              70 AS priority
+            FROM `{self.settings.dealer_accounts_table_fqn}`
+            WHERE dealer_classification IN ('dealer', 'dealer_group')
+              AND (
+                best_phone IS NULL
+                OR TRIM(best_phone) = ''
+                OR gbp_address_line IS NULL
+                OR TRIM(gbp_address_line) = ''
+                OR account_city IS NULL
+                OR account_state IS NULL
+                OR fetch_status = 'blocked'
+              )
+            """
         if task_type == TASK_EXTRACT_CONTACTS:
             return f"""
             SELECT
@@ -524,6 +546,13 @@ class WorkQueueService:
             return
         if task_type == TASK_ENRICH:
             self.account_enrichment.enrich(
+                dry_run=False,
+                limit=limit,
+                account_keys=account_keys,
+            )
+            return
+        if task_type == TASK_ENRICH_GBP:
+            self.gbp_enrichment.enrich(
                 dry_run=False,
                 limit=limit,
                 account_keys=account_keys,
