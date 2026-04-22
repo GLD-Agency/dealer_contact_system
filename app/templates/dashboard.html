@@ -177,6 +177,14 @@
               <strong>{{ "{:,}".format(data.overview.accounts_with_phone or 0) }}</strong>
             </div>
             <div class="metric-row">
+              <span>Accounts With Website Phone</span>
+              <strong>{{ "{:,}".format(data.overview.accounts_with_website_phone or 0) }}</strong>
+            </div>
+            <div class="metric-row">
+              <span>Accounts With GBP Phone</span>
+              <strong>{{ "{:,}".format(data.overview.accounts_with_gbp_phone or 0) }}</strong>
+            </div>
+            <div class="metric-row">
               <span>Activation-Ready Contacts</span>
               <strong>{{ "{:,}".format(data.overview.activation_ready_contacts or 0) }}</strong>
             </div>

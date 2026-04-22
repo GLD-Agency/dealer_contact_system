@@ -74,6 +74,45 @@ class LowRiskEnrichmentService:
               THEN 'low_risk_enriched'
             ELSE 'seed_only'
           END,
+          website_phone = COALESCE(
+            NULLIF(TRIM(website_phone), ''),
+            NULLIF(TRIM(account_phone), '')
+          ),
+          website_phone_confidence_score = CASE
+            WHEN NULLIF(TRIM(website_phone), '') IS NOT NULL THEN COALESCE(website_phone_confidence_score, account_phone_confidence_score, 0.0)
+            WHEN NULLIF(TRIM(account_phone), '') IS NOT NULL THEN COALESCE(account_phone_confidence_score, 0.72)
+            ELSE website_phone_confidence_score
+          END,
+          website_phone_source_url = COALESCE(
+            NULLIF(TRIM(website_phone_source_url), ''),
+            NULLIF(TRIM(account_phone_source_url), '')
+          ),
+          best_phone = COALESCE(
+            NULLIF(TRIM(best_phone), ''),
+            NULLIF(TRIM(website_phone), ''),
+            NULLIF(TRIM(gbp_phone), ''),
+            NULLIF(TRIM(account_phone), '')
+          ),
+          best_phone_source = COALESCE(
+            NULLIF(TRIM(best_phone_source), ''),
+            CASE
+              WHEN NULLIF(TRIM(website_phone), '') IS NOT NULL OR NULLIF(TRIM(account_phone), '') IS NOT NULL THEN 'website'
+              WHEN NULLIF(TRIM(gbp_phone), '') IS NOT NULL THEN 'gbp'
+              ELSE NULL
+            END
+          ),
+          best_phone_confidence_score = COALESCE(
+            best_phone_confidence_score,
+            website_phone_confidence_score,
+            gbp_phone_confidence_score,
+            account_phone_confidence_score
+          ),
+          best_phone_source_url = COALESCE(
+            NULLIF(TRIM(best_phone_source_url), ''),
+            NULLIF(TRIM(website_phone_source_url), ''),
+            NULLIF(TRIM(account_phone_source_url), ''),
+            NULLIF(TRIM(gbp_phone_source_url), '')
+          ),
           activation_status = CASE
             WHEN LOWER(COALESCE(da.account_status, 'active')) IN ('inactive', 'suppressed') THEN 'hold'
             WHEN da.dealer_classification IN ('dealer', 'dealer_group')

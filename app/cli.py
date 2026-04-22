@@ -552,6 +552,8 @@ def print_report(repository: BigQueryRepository, settings: Settings) -> None:
       (SELECT COUNTIF(dealer_classification = 'dealer') FROM `{settings.dealer_accounts_table_fqn}`) AS validated_dealers,
       (SELECT COUNTIF(dealer_classification = 'dealer_group') FROM `{settings.dealer_accounts_table_fqn}`) AS validated_dealer_groups,
       (SELECT COUNTIF(account_phone IS NOT NULL AND TRIM(account_phone) != '') FROM `{settings.dealer_accounts_table_fqn}`) AS accounts_with_phone,
+      (SELECT COUNTIF(website_phone IS NOT NULL AND TRIM(website_phone) != '') FROM `{settings.dealer_accounts_table_fqn}`) AS accounts_with_website_phone,
+      (SELECT COUNTIF(gbp_phone IS NOT NULL AND TRIM(gbp_phone) != '') FROM `{settings.dealer_accounts_table_fqn}`) AS accounts_with_gbp_phone,
       (SELECT COUNTIF(activation_status = 'activation_ready') FROM `{settings.dealer_accounts_table_fqn}`) AS activation_ready_accounts,
       (SELECT COUNT(*) FROM `{settings.marketing_ready_contacts_view_fqn}`) AS marketing_ready_contacts,
       (SELECT COUNT(*) FROM `{settings.sales_ready_leads_view_fqn}`) AS sales_ready_leads,
@@ -593,6 +595,8 @@ def print_report(repository: BigQueryRepository, settings: Settings) -> None:
     print(f"Validated dealers: {report.get('validated_dealers', 0)}")
     print(f"Validated dealer groups: {report.get('validated_dealer_groups', 0)}")
     print(f"Accounts with phone: {report.get('accounts_with_phone', 0)}")
+    print(f"Accounts with website phone: {report.get('accounts_with_website_phone', 0)}")
+    print(f"Accounts with GBP phone: {report.get('accounts_with_gbp_phone', 0)}")
     print(f"Activation-ready accounts: {report.get('activation_ready_accounts', 0)}")
     print(f"Marketing-ready contacts: {report.get('marketing_ready_contacts', 0)}")
     print(f"Sales-ready leads: {report.get('sales_ready_leads', 0)}")

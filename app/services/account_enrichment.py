@@ -343,6 +343,13 @@ class AccountEnrichmentService:
             update["account_phone"] = derived["account_phone"]
             update["account_phone_source_url"] = derived.get("account_phone_source_url", homepage.final_url)
             update["account_phone_confidence_score"] = derived["account_phone_confidence_score"]
+            update["website_phone"] = derived["account_phone"]
+            update["website_phone_source_url"] = derived.get("account_phone_source_url", homepage.final_url)
+            update["website_phone_confidence_score"] = derived["account_phone_confidence_score"]
+            update["best_phone"] = derived["account_phone"]
+            update["best_phone_source"] = "website"
+            update["best_phone_source_url"] = derived.get("account_phone_source_url", homepage.final_url)
+            update["best_phone_confidence_score"] = derived["account_phone_confidence_score"]
 
         return update
 
