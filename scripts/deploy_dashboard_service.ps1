@@ -4,6 +4,9 @@ param(
   [string]$Repository = "dealer-contact-system",
   [string]$ImageName = "dealer-contact-dashboard",
   [string]$ServiceName = "dealer-contact-dashboard",
+  [string]$CampaignMonitorApiKeySecret = "campaign-monitor-api-key:latest",
+  [string]$CampaignMonitorClientIdSecret = "campaign-monitor-client-id:latest",
+  [string]$GeminiApiKeySecret = "gemini-api-key:latest",
   [Parameter(Mandatory = $true)]
   [string]$ServiceAccountEmail
 )
@@ -15,12 +18,6 @@ $envVars = @(
   "BIGQUERY_DATASET=dealer_data"
 )
 
-if ($env:CAMPAIGN_MONITOR_API_KEY) {
-  $envVars += "CAMPAIGN_MONITOR_API_KEY=$($env:CAMPAIGN_MONITOR_API_KEY)"
-}
-if ($env:CAMPAIGN_MONITOR_CLIENT_ID) {
-  $envVars += "CAMPAIGN_MONITOR_CLIENT_ID=$($env:CAMPAIGN_MONITOR_CLIENT_ID)"
-}
 if ($env:META_ACCESS_TOKEN) {
   $envVars += "META_ACCESS_TOKEN=$($env:META_ACCESS_TOKEN)"
 }
@@ -66,9 +63,6 @@ if ($env:AI_RETRIEVAL_PROVIDER_ORDER) {
 if ($env:GEMINI_ENABLED) {
   $envVars += "GEMINI_ENABLED=$($env:GEMINI_ENABLED)"
 }
-if ($env:GEMINI_API_KEY) {
-  $envVars += "GEMINI_API_KEY=$($env:GEMINI_API_KEY)"
-}
 if ($env:GEMINI_MODEL) {
   $envVars += "GEMINI_MODEL=$($env:GEMINI_MODEL)"
 }
@@ -92,6 +86,12 @@ $envVars |
     "${name}: '$escaped'"
   } | Set-Content -Path $envFile -Encoding UTF8
 
+$secretMappings = @(
+  "CAMPAIGN_MONITOR_API_KEY=$CampaignMonitorApiKeySecret",
+  "CAMPAIGN_MONITOR_CLIENT_ID=$CampaignMonitorClientIdSecret",
+  "GEMINI_API_KEY=$GeminiApiKeySecret"
+) -join ","
+
 gcloud builds submit `
   --project $ProjectId `
   --config cloudbuild.dashboard.yaml
@@ -103,6 +103,7 @@ gcloud run deploy $ServiceName `
   --service-account $ServiceAccountEmail `
   --allow-unauthenticated `
   --port 8080 `
-  --env-vars-file $envFile
+  --env-vars-file $envFile `
+  --set-secrets $secretMappings
 
 Remove-Item -Path $envFile -ErrorAction SilentlyContinue

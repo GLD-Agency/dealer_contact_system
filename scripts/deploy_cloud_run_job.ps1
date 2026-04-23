@@ -12,6 +12,9 @@ param(
     [int]$RetryBlockedBatchSize = 10,
     [int]$CampaignMonitorSyncBatchSize = 100,
     [bool]$CampaignMonitorSyncEnabled = $true,
+    [string]$CampaignMonitorApiKeySecret = "campaign-monitor-api-key:latest",
+    [string]$CampaignMonitorClientIdSecret = "campaign-monitor-client-id:latest",
+    [string]$GeminiApiKeySecret = "gemini-api-key:latest",
     [int]$TaskTimeoutSeconds = 3600
 )
 
@@ -35,12 +38,6 @@ $envVars = @(
     "CAMPAIGN_MONITOR_SYNC_ENABLED=$($CampaignMonitorSyncEnabled.ToString().ToLower())"
 )
 
-if ($env:CAMPAIGN_MONITOR_API_KEY) {
-    $envVars += "CAMPAIGN_MONITOR_API_KEY=$($env:CAMPAIGN_MONITOR_API_KEY)"
-}
-if ($env:CAMPAIGN_MONITOR_CLIENT_ID) {
-    $envVars += "CAMPAIGN_MONITOR_CLIENT_ID=$($env:CAMPAIGN_MONITOR_CLIENT_ID)"
-}
 if ($env:CAMPAIGN_MONITOR_MASTER_LIST_NAME) {
     $envVars += "CAMPAIGN_MONITOR_MASTER_LIST_NAME=$($env:CAMPAIGN_MONITOR_MASTER_LIST_NAME)"
 }
@@ -86,9 +83,6 @@ if ($env:AI_RETRIEVAL_COOLDOWN_HOURS) {
 if ($env:GEMINI_ENABLED) {
     $envVars += "GEMINI_ENABLED=$($env:GEMINI_ENABLED)"
 }
-if ($env:GEMINI_API_KEY) {
-    $envVars += "GEMINI_API_KEY=$($env:GEMINI_API_KEY)"
-}
 if ($env:GEMINI_MODEL) {
     $envVars += "GEMINI_MODEL=$($env:GEMINI_MODEL)"
 }
@@ -121,6 +115,12 @@ $envVarMap.GetEnumerator() |
         "$($_.Name): '$escaped'"
     } | Set-Content -Path $envFile -Encoding UTF8
 
+$secretMappings = @(
+    "CAMPAIGN_MONITOR_API_KEY=$CampaignMonitorApiKeySecret",
+    "CAMPAIGN_MONITOR_CLIENT_ID=$CampaignMonitorClientIdSecret",
+    "GEMINI_API_KEY=$GeminiApiKeySecret"
+) -join ","
+
 Write-Host "Ensuring Artifact Registry repository exists..."
 cmd /c "gcloud artifacts repositories describe $Repository --location=$Region --project=$ProjectId >nul 2>nul"
 if ($LASTEXITCODE -ne 0) {
@@ -131,7 +131,7 @@ Write-Host "Building container image..."
 cmd /c "gcloud builds submit --tag $imageUri --project=$ProjectId"
 
 Write-Host "Deploying Cloud Run Job..."
-cmd /c "gcloud run jobs deploy $JobName --image $imageUri --region $Region --project=$ProjectId --service-account $ServiceAccountEmail --env-vars-file $envFile --max-retries 0 --task-timeout ${TaskTimeoutSeconds}s --args run-queue-cycle,--seed"
+cmd /c "gcloud run jobs deploy $JobName --image $imageUri --region $Region --project=$ProjectId --service-account $ServiceAccountEmail --env-vars-file $envFile --set-secrets $secretMappings --max-retries 0 --task-timeout ${TaskTimeoutSeconds}s --args run-queue-cycle,--seed"
 
 Remove-Item -Path $envFile -ErrorAction SilentlyContinue
 
