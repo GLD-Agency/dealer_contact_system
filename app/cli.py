@@ -278,6 +278,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Retrieve AI account facts for one or more specific account_key values.",
     )
+    ai_parser.add_argument(
+        "--prompt-style",
+        choices=["structured", "simple_staff"],
+        default=None,
+        help="Override the AI prompt style for this run.",
+    )
     prospect_leads_parser = subparsers.add_parser(
         "refresh-prospect-leads",
         help="Refresh the materialized prospect lead table from canonical data.",
@@ -582,6 +588,7 @@ def main() -> None:
             dry_run=args.dry_run,
             limit=args.limit,
             account_keys=args.account_key,
+            prompt_style=args.prompt_style,
         )
         logger.info("AI account-facts command complete | status=%s | detail=%s", result.status, result.detail)
         print(f"AI account-facts status: {result.status}")

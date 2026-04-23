@@ -159,6 +159,9 @@ gcloud auth application-default login
 - `AI_RETRIEVAL_ENABLED`: Whether the provider-neutral AI retrieval lane should run
 - `AI_RETRIEVAL_PROVIDER_ORDER`: Ordered provider fallback such as `gemini,openai`
 - `AI_RETRIEVAL_COOLDOWN_HOURS`: Cooldown before the same account re-enters the AI lane
+- `AI_RETRIEVAL_RATE_LIMIT_COOLDOWN_MINUTES`: Shorter cooldown applied when the provider returns a quota/rate-limit response
+- `AI_RETRIEVAL_REQUEST_DELAY_SECONDS`: Delay inserted between AI requests so the lane does not hammer the provider
+- `AI_RETRIEVAL_PROMPT_STYLE`: Prompt style for AI retrieval, such as `structured` or `simple_staff`
 - `GEMINI_ENABLED`: Whether Gemini account-facts retrieval is enabled
 - `GEMINI_API_KEY`: API key for Gemini account-facts retrieval
 - `GEMINI_MODEL`: Gemini model name used for AI retrieval
@@ -210,6 +213,7 @@ python -m app refresh-gbp-enrichment --dry-run --limit 25
 python -m app refresh-gbp-enrichment --limit 25
 python -m app refresh-ai-account-facts --dry-run --limit 15
 python -m app refresh-ai-account-facts --limit 15
+python -m app refresh-ai-account-facts --limit 3 --prompt-style simple_staff --account-key bmwminnetonka.com
 python -m app refresh-prospect-leads --dry-run
 python -m app refresh-prospect-leads
 python -m app refresh-client-dim --dry-run
@@ -255,6 +259,7 @@ python main.py refresh-gbp-enrichment --dry-run --limit 25
 python main.py refresh-gbp-enrichment --limit 25
 python main.py refresh-ai-account-facts --dry-run --limit 15
 python main.py refresh-ai-account-facts --limit 15
+python main.py refresh-ai-account-facts --limit 3 --prompt-style simple_staff --account-key bmwminnetonka.com
 python main.py refresh-prospect-leads --dry-run
 python main.py refresh-prospect-leads
 python main.py refresh-client-dim --dry-run

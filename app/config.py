@@ -59,6 +59,9 @@ class Settings:
     ai_retrieval_enabled: bool
     ai_retrieval_provider_order: str
     ai_retrieval_cooldown_hours: int
+    ai_retrieval_rate_limit_cooldown_minutes: int
+    ai_retrieval_request_delay_seconds: float
+    ai_retrieval_prompt_style: str
     gemini_enabled: bool
     gemini_api_key: str | None
     gemini_model: str
@@ -243,6 +246,9 @@ def get_settings() -> Settings:
         ai_retrieval_enabled=os.getenv("AI_RETRIEVAL_ENABLED", "true").lower() == "true",
         ai_retrieval_provider_order=os.getenv("AI_RETRIEVAL_PROVIDER_ORDER", "gemini,openai"),
         ai_retrieval_cooldown_hours=int(os.getenv("AI_RETRIEVAL_COOLDOWN_HOURS", "72")),
+        ai_retrieval_rate_limit_cooldown_minutes=int(os.getenv("AI_RETRIEVAL_RATE_LIMIT_COOLDOWN_MINUTES", "180")),
+        ai_retrieval_request_delay_seconds=float(os.getenv("AI_RETRIEVAL_REQUEST_DELAY_SECONDS", "2")),
+        ai_retrieval_prompt_style=os.getenv("AI_RETRIEVAL_PROMPT_STYLE", "structured").strip().lower() or "structured",
         gemini_enabled=os.getenv("GEMINI_ENABLED", "false").lower() == "true",
         gemini_api_key=os.getenv("GEMINI_API_KEY"),
         gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),

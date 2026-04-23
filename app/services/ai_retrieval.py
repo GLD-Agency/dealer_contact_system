@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import re
+import time
 from typing import Any, Protocol
 import uuid
 from urllib.parse import urlparse
@@ -81,7 +82,11 @@ class AiRetrievalProvider(Protocol):
     def is_available(self) -> bool:
         """Return True when the provider is configured and enabled."""
 
-    def retrieve_account_facts(self, account: AiRetrievalAccountCandidate) -> AiProviderResult:
+    def retrieve_account_facts(
+        self,
+        account: AiRetrievalAccountCandidate,
+        prompt_style: str,
+    ) -> AiProviderResult:
         """Return structured account facts for one account candidate."""
 
 
@@ -99,7 +104,11 @@ class GeminiRetrievalProvider:
     def is_available(self) -> bool:
         return self.settings.gemini_enabled and bool(self.settings.gemini_api_key)
 
-    def retrieve_account_facts(self, account: AiRetrievalAccountCandidate) -> AiProviderResult:
+    def retrieve_account_facts(
+        self,
+        account: AiRetrievalAccountCandidate,
+        prompt_style: str,
+    ) -> AiProviderResult:
         if not self.is_available():
             return AiProviderResult(
                 provider=self.name,
@@ -110,7 +119,7 @@ class GeminiRetrievalProvider:
                 detail="Gemini provider is not configured.",
             )
 
-        prompt = build_account_facts_prompt(account)
+        prompt = build_account_facts_prompt(account, prompt_style)
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "tools": [{"googleSearch": {}}, {"urlContext": {}}],
@@ -126,6 +135,20 @@ class GeminiRetrievalProvider:
                 json=payload,
                 timeout=self.settings.request_timeout_seconds * 3,
             )
+            if response.status_code == 429:
+                retry_after = response.headers.get("Retry-After")
+                detail = "Gemini account-facts request hit provider rate limits."
+                if retry_after:
+                    detail = f"{detail} Retry-After={retry_after}."
+                return AiProviderResult(
+                    provider=self.name,
+                    status="rate_limited",
+                    facts={},
+                    citations=[],
+                    confidence=0.0,
+                    detail=detail,
+                    error_message=response.text[:1000] or None,
+                )
             response.raise_for_status()
             body = response.json()
         except requests.RequestException as exc:
@@ -199,7 +222,11 @@ class OpenAIRetrievalProvider:
     def is_available(self) -> bool:
         return self.settings.openai_enabled and bool(self.settings.openai_api_key)
 
-    def retrieve_account_facts(self, account: AiRetrievalAccountCandidate) -> AiProviderResult:
+    def retrieve_account_facts(
+        self,
+        account: AiRetrievalAccountCandidate,
+        prompt_style: str,
+    ) -> AiProviderResult:
         if not self.is_available():
             return AiProviderResult(
                 provider=self.name,
@@ -210,7 +237,7 @@ class OpenAIRetrievalProvider:
                 detail="OpenAI provider is not configured.",
             )
 
-        prompt = build_account_facts_prompt(account)
+        prompt = build_account_facts_prompt(account, prompt_style)
         payload = {
             "model": self.settings.openai_model,
             "input": prompt,
@@ -226,6 +253,20 @@ class OpenAIRetrievalProvider:
                 json=payload,
                 timeout=self.settings.request_timeout_seconds * 3,
             )
+            if response.status_code == 429:
+                retry_after = response.headers.get("Retry-After")
+                detail = "OpenAI account-facts request hit provider rate limits."
+                if retry_after:
+                    detail = f"{detail} Retry-After={retry_after}."
+                return AiProviderResult(
+                    provider=self.name,
+                    status="rate_limited",
+                    facts={},
+                    citations=[],
+                    confidence=0.0,
+                    detail=detail,
+                    error_message=response.text[:1000] or None,
+                )
             response.raise_for_status()
             body = response.json()
         except requests.RequestException as exc:
@@ -315,6 +356,7 @@ class AiRetrievalService:
         dry_run: bool = False,
         limit: int | None = None,
         account_keys: list[str] | None = None,
+        prompt_style: str | None = None,
     ) -> AiRetrievalRefreshResult:
         """Retrieve structured account facts for eligible dealer accounts."""
 
@@ -337,15 +379,22 @@ class AiRetrievalService:
             self._record_status("warning", detail)
             return AiRetrievalRefreshResult("warning", detail, len(candidates), 0)
 
+        resolved_prompt_style = self._resolve_prompt_style(prompt_style)
         processed_accounts = 0
         enriched_accounts = 0
+        rate_limited = False
         for account in candidates:
+            if processed_accounts > 0 and self.settings.ai_retrieval_request_delay_seconds > 0:
+                time.sleep(self.settings.ai_retrieval_request_delay_seconds)
             processed_accounts += 1
             provider_results: list[AiProviderResult] = []
             winning_result: AiProviderResult | None = None
             for provider in configured_providers:
-                result = provider.retrieve_account_facts(account)
+                result = provider.retrieve_account_facts(account, resolved_prompt_style)
                 provider_results.append(result)
+                if result.status == "rate_limited":
+                    rate_limited = True
+                    break
                 if result.status == "success" and self._qualifies_for_canonical_update(result):
                     winning_result = result
                     break
@@ -356,11 +405,21 @@ class AiRetrievalService:
                 enriched_accounts += 1
             else:
                 self._mark_attempt_without_update(account, provider_results)
+            if rate_limited:
+                logger.warning(
+                    "AI retrieval hit provider rate limit; stopping batch early | account=%s | prompt_style=%s",
+                    account.account_key,
+                    resolved_prompt_style,
+                )
+                break
 
         detail = (
             f"AI account-facts retrieval processed {processed_accounts:,} account(s) "
-            f"and enriched {enriched_accounts:,} using {', '.join(provider.name for provider in configured_providers)}."
+            f"and enriched {enriched_accounts:,} using {', '.join(provider.name for provider in configured_providers)} "
+            f"with prompt_style={resolved_prompt_style}."
         )
+        if rate_limited:
+            detail = f"{detail} Processing stopped early because the provider rate-limited the batch."
         self._record_status("healthy" if enriched_accounts > 0 else "warning", detail)
         return AiRetrievalRefreshResult(
             status="success",
@@ -368,6 +427,14 @@ class AiRetrievalService:
             processed_accounts=processed_accounts,
             enriched_accounts=enriched_accounts,
         )
+
+    def _resolve_prompt_style(self, prompt_style: str | None) -> str:
+        """Return one supported prompt style."""
+
+        resolved = (prompt_style or self.settings.ai_retrieval_prompt_style or "structured").strip().lower()
+        if resolved not in {"structured", "simple_staff"}:
+            return "structured"
+        return resolved
 
     def _configured_providers(self) -> list[AiRetrievalProvider]:
         """Return configured providers in preferred order."""
@@ -583,7 +650,16 @@ class AiRetrievalService:
 
         status = "empty"
         error_message = None
+        cooldown_expression = f"TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL {self.settings.ai_retrieval_cooldown_hours} HOUR)"
         for result in provider_results:
+            if result.status == "rate_limited":
+                status = "rate_limited"
+                error_message = result.error_message or result.detail
+                cooldown_expression = (
+                    f"TIMESTAMP_ADD(CURRENT_TIMESTAMP(), "
+                    f"INTERVAL {self.settings.ai_retrieval_rate_limit_cooldown_minutes} MINUTE)"
+                )
+                break
             if result.status == "failed":
                 status = "failed"
                 error_message = result.error_message or result.detail
@@ -596,7 +672,7 @@ class AiRetrievalService:
           ai_retrieval_status = '{status}',
           ai_retrieval_last_error = {self._sql_literal(error_message)},
           ai_retrieval_last_attempt_at = CURRENT_TIMESTAMP(),
-          next_ai_retrieval_at = TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL {self.settings.ai_retrieval_cooldown_hours} HOUR),
+          next_ai_retrieval_at = {cooldown_expression},
           updated_at = CURRENT_TIMESTAMP()
         WHERE dealer_account_id = '{self._escape_sql(account.dealer_account_id)}'
         """
@@ -676,8 +752,11 @@ class AiRetrievalService:
         )
 
 
-def build_account_facts_prompt(account: AiRetrievalAccountCandidate) -> str:
+def build_account_facts_prompt(account: AiRetrievalAccountCandidate, prompt_style: str = "structured") -> str:
     """Build a structured prompt for account-facts retrieval."""
+
+    if prompt_style == "simple_staff":
+        return build_simple_staff_prompt(account)
 
     known_context = {
         "account_key": account.account_key,
@@ -723,6 +802,53 @@ def build_account_facts_prompt(account: AiRetrievalAccountCandidate) -> str:
         "- Confidence must be between 0 and 1.\n"
         "- If a known website URL is provided, prioritize it and pages under that domain first.\n"
         f"Known account context: {json.dumps(known_context, ensure_ascii=True)}\n"
+    )
+
+
+def build_simple_staff_prompt(account: AiRetrievalAccountCandidate) -> str:
+    """Build a simpler natural-language prompt for dealer and staff fact finding."""
+
+    dealer_name = account.account_name or account.account_key
+    brand_prefix = f"{account.inferred_brand} " if account.inferred_brand and account.inferred_brand.lower() not in str(dealer_name).lower() else ""
+    place_parts = [part for part in [account.account_city, account.account_state] if part]
+    location_hint = f" in {', '.join(place_parts)}" if place_parts else ""
+    known_website = f" Known website: {account.website_url}." if account.website_url else ""
+    known_phone = f" Known phone: {account.best_phone}." if account.best_phone else ""
+    known_address = ""
+    if account.gbp_address_line or account.gbp_city or account.gbp_state_or_province:
+        known_address = (
+            " Known address hint: "
+            f"{', '.join(part for part in [account.gbp_address_line, account.gbp_city, account.gbp_state_or_province, account.gbp_postal_code, account.gbp_country] if part)}."
+        )
+    return (
+        f"{brand_prefix}{dealer_name}{location_hint}: can you get me the dealership address, phone number, website, "
+        "and any staff page you can find? Also get the names, roles, phone numbers, and strongly inferred email patterns "
+        "for visible staff when possible.\n"
+        f"{known_website}{known_phone}{known_address}\n"
+        "Return only valid JSON with this shape:\n"
+        "{\n"
+        '  "display_name": string|null,\n'
+        '  "phone": string|null,\n'
+        '  "address_line": string|null,\n'
+        '  "city": string|null,\n'
+        '  "state_or_province": string|null,\n'
+        '  "postal_code": string|null,\n'
+        '  "country": string|null,\n'
+        '  "website_url": string|null,\n'
+        '  "staff_page_url": string|null,\n'
+        '  "staff_directory_detected": boolean,\n'
+        '  "staff_hints": [{"full_name": string|null, "role_title": string|null, "role_family": string|null, "phone": string|null, "citation_url": string|null, "inferred_email": string|null}],\n'
+        '  "citations": string[],\n'
+        '  "confidence": number,\n'
+        '  "detail": string\n'
+        "}\n"
+        "Rules:\n"
+        "- Prefer the actual dealer rooftop, not OEM or vendor facts.\n"
+        "- Use public web sources only.\n"
+        "- Include citation URLs.\n"
+        "- If an email is not visible, inferred_email may be included only when the pattern is strongly supported by public evidence; otherwise leave it null.\n"
+        "- If unsure, leave fields null.\n"
+        "- Confidence must be between 0 and 1.\n"
     )
 
 
