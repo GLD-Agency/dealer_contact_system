@@ -60,12 +60,37 @@ if ($env:CLIENT_DIM_TABLE) {
 if ($env:AI_RETRIEVAL_ENABLED) {
   $envVars += "AI_RETRIEVAL_ENABLED=$($env:AI_RETRIEVAL_ENABLED)"
 }
+if ($env:AI_RETRIEVAL_PROVIDER_ORDER) {
+  $envVars += "AI_RETRIEVAL_PROVIDER_ORDER=$($env:AI_RETRIEVAL_PROVIDER_ORDER)"
+}
 if ($env:GEMINI_ENABLED) {
   $envVars += "GEMINI_ENABLED=$($env:GEMINI_ENABLED)"
+}
+if ($env:GEMINI_API_KEY) {
+  $envVars += "GEMINI_API_KEY=$($env:GEMINI_API_KEY)"
+}
+if ($env:GEMINI_MODEL) {
+  $envVars += "GEMINI_MODEL=$($env:GEMINI_MODEL)"
 }
 if ($env:OPENAI_ENABLED) {
   $envVars += "OPENAI_ENABLED=$($env:OPENAI_ENABLED)"
 }
+if ($env:OPENAI_API_KEY) {
+  $envVars += "OPENAI_API_KEY=$($env:OPENAI_API_KEY)"
+}
+if ($env:OPENAI_MODEL) {
+  $envVars += "OPENAI_MODEL=$($env:OPENAI_MODEL)"
+}
+
+$envFile = Join-Path $env:TEMP "dealer-contact-dashboard-env.yaml"
+$envVars |
+  ForEach-Object {
+    $parts = $_ -split "=", 2
+    $name = $parts[0]
+    $value = if ($parts.Length -gt 1) { [string]$parts[1] } else { "" }
+    $escaped = $value.Replace("'", "''")
+    "${name}: '$escaped'"
+  } | Set-Content -Path $envFile -Encoding UTF8
 
 gcloud builds submit `
   --project $ProjectId `
@@ -78,4 +103,6 @@ gcloud run deploy $ServiceName `
   --service-account $ServiceAccountEmail `
   --allow-unauthenticated `
   --port 8080 `
-  --set-env-vars ($envVars -join ",")
+  --env-vars-file $envFile
+
+Remove-Item -Path $envFile -ErrorAction SilentlyContinue

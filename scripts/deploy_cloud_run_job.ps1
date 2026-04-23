@@ -33,74 +33,93 @@ $envVars = @(
     "RETRY_BLOCKED_WORKER_BATCH_SIZE=$RetryBlockedBatchSize",
     "CAMPAIGN_MONITOR_SYNC_BATCH_SIZE=$CampaignMonitorSyncBatchSize",
     "CAMPAIGN_MONITOR_SYNC_ENABLED=$($CampaignMonitorSyncEnabled.ToString().ToLower())"
-) -join ","
+)
 
 if ($env:CAMPAIGN_MONITOR_API_KEY) {
-    $envVars = "$envVars,CAMPAIGN_MONITOR_API_KEY=$($env:CAMPAIGN_MONITOR_API_KEY)"
+    $envVars += "CAMPAIGN_MONITOR_API_KEY=$($env:CAMPAIGN_MONITOR_API_KEY)"
 }
 if ($env:CAMPAIGN_MONITOR_CLIENT_ID) {
-    $envVars = "$envVars,CAMPAIGN_MONITOR_CLIENT_ID=$($env:CAMPAIGN_MONITOR_CLIENT_ID)"
+    $envVars += "CAMPAIGN_MONITOR_CLIENT_ID=$($env:CAMPAIGN_MONITOR_CLIENT_ID)"
 }
 if ($env:CAMPAIGN_MONITOR_MASTER_LIST_NAME) {
-    $envVars = "$envVars,CAMPAIGN_MONITOR_MASTER_LIST_NAME=$($env:CAMPAIGN_MONITOR_MASTER_LIST_NAME)"
+    $envVars += "CAMPAIGN_MONITOR_MASTER_LIST_NAME=$($env:CAMPAIGN_MONITOR_MASTER_LIST_NAME)"
 }
 if ($env:MANAGED_FETCH_ENABLED) {
-    $envVars = "$envVars,MANAGED_FETCH_ENABLED=$($env:MANAGED_FETCH_ENABLED)"
+    $envVars += "MANAGED_FETCH_ENABLED=$($env:MANAGED_FETCH_ENABLED)"
 }
 if ($env:GBP_ENRICHMENT_ENABLED) {
-    $envVars = "$envVars,GBP_ENRICHMENT_ENABLED=$($env:GBP_ENRICHMENT_ENABLED)"
+    $envVars += "GBP_ENRICHMENT_ENABLED=$($env:GBP_ENRICHMENT_ENABLED)"
 }
 if ($env:GBP_PROVIDER) {
-    $envVars = "$envVars,GBP_PROVIDER=$($env:GBP_PROVIDER)"
+    $envVars += "GBP_PROVIDER=$($env:GBP_PROVIDER)"
 }
 if ($env:GBP_SEARCH_ENDPOINT) {
-    $envVars = "$envVars,GBP_SEARCH_ENDPOINT=$($env:GBP_SEARCH_ENDPOINT)"
+    $envVars += "GBP_SEARCH_ENDPOINT=$($env:GBP_SEARCH_ENDPOINT)"
 }
 if ($env:MANAGED_FETCH_PROVIDER) {
-    $envVars = "$envVars,MANAGED_FETCH_PROVIDER=$($env:MANAGED_FETCH_PROVIDER)"
+    $envVars += "MANAGED_FETCH_PROVIDER=$($env:MANAGED_FETCH_PROVIDER)"
 }
 if ($env:MANAGED_FETCH_API_KEY) {
-    $envVars = "$envVars,MANAGED_FETCH_API_KEY=$($env:MANAGED_FETCH_API_KEY)"
+    $envVars += "MANAGED_FETCH_API_KEY=$($env:MANAGED_FETCH_API_KEY)"
 }
 if ($env:CLIENT_DIM_ENABLED) {
-    $envVars = "$envVars,CLIENT_DIM_ENABLED=$($env:CLIENT_DIM_ENABLED)"
+    $envVars += "CLIENT_DIM_ENABLED=$($env:CLIENT_DIM_ENABLED)"
 }
 if ($env:GLD_ACCOUNTABILITY_PROJECT_ID) {
-    $envVars = "$envVars,GLD_ACCOUNTABILITY_PROJECT_ID=$($env:GLD_ACCOUNTABILITY_PROJECT_ID)"
+    $envVars += "GLD_ACCOUNTABILITY_PROJECT_ID=$($env:GLD_ACCOUNTABILITY_PROJECT_ID)"
 }
 if ($env:CLIENT_DIM_DATASET) {
-    $envVars = "$envVars,CLIENT_DIM_DATASET=$($env:CLIENT_DIM_DATASET)"
+    $envVars += "CLIENT_DIM_DATASET=$($env:CLIENT_DIM_DATASET)"
 }
 if ($env:CLIENT_DIM_TABLE) {
-    $envVars = "$envVars,CLIENT_DIM_TABLE=$($env:CLIENT_DIM_TABLE)"
+    $envVars += "CLIENT_DIM_TABLE=$($env:CLIENT_DIM_TABLE)"
 }
 if ($env:AI_RETRIEVAL_ENABLED) {
-    $envVars = "$envVars,AI_RETRIEVAL_ENABLED=$($env:AI_RETRIEVAL_ENABLED)"
+    $envVars += "AI_RETRIEVAL_ENABLED=$($env:AI_RETRIEVAL_ENABLED)"
 }
 if ($env:AI_RETRIEVAL_PROVIDER_ORDER) {
-    $envVars = "$envVars,AI_RETRIEVAL_PROVIDER_ORDER=$($env:AI_RETRIEVAL_PROVIDER_ORDER)"
+    $envVars += "AI_RETRIEVAL_PROVIDER_ORDER=$($env:AI_RETRIEVAL_PROVIDER_ORDER)"
 }
 if ($env:AI_RETRIEVAL_COOLDOWN_HOURS) {
-    $envVars = "$envVars,AI_RETRIEVAL_COOLDOWN_HOURS=$($env:AI_RETRIEVAL_COOLDOWN_HOURS)"
+    $envVars += "AI_RETRIEVAL_COOLDOWN_HOURS=$($env:AI_RETRIEVAL_COOLDOWN_HOURS)"
 }
 if ($env:GEMINI_ENABLED) {
-    $envVars = "$envVars,GEMINI_ENABLED=$($env:GEMINI_ENABLED)"
+    $envVars += "GEMINI_ENABLED=$($env:GEMINI_ENABLED)"
 }
 if ($env:GEMINI_API_KEY) {
-    $envVars = "$envVars,GEMINI_API_KEY=$($env:GEMINI_API_KEY)"
+    $envVars += "GEMINI_API_KEY=$($env:GEMINI_API_KEY)"
 }
 if ($env:GEMINI_MODEL) {
-    $envVars = "$envVars,GEMINI_MODEL=$($env:GEMINI_MODEL)"
+    $envVars += "GEMINI_MODEL=$($env:GEMINI_MODEL)"
 }
 if ($env:OPENAI_ENABLED) {
-    $envVars = "$envVars,OPENAI_ENABLED=$($env:OPENAI_ENABLED)"
+    $envVars += "OPENAI_ENABLED=$($env:OPENAI_ENABLED)"
 }
 if ($env:OPENAI_API_KEY) {
-    $envVars = "$envVars,OPENAI_API_KEY=$($env:OPENAI_API_KEY)"
+    $envVars += "OPENAI_API_KEY=$($env:OPENAI_API_KEY)"
 }
 if ($env:OPENAI_MODEL) {
-    $envVars = "$envVars,OPENAI_MODEL=$($env:OPENAI_MODEL)"
+    $envVars += "OPENAI_MODEL=$($env:OPENAI_MODEL)"
 }
+
+$envVarMap = @{}
+foreach ($entry in $envVars) {
+    if (-not $entry) {
+        continue
+    }
+    $parts = $entry -split "=", 2
+    if ($parts.Length -eq 2) {
+        $envVarMap[$parts[0]] = $parts[1]
+    }
+}
+$envFile = Join-Path $env:TEMP "dealer-contact-worker-env.yaml"
+$envVarMap.GetEnumerator() |
+    Sort-Object Name |
+    ForEach-Object {
+        $value = [string]$_.Value
+        $escaped = $value.Replace("'", "''")
+        "$($_.Name): '$escaped'"
+    } | Set-Content -Path $envFile -Encoding UTF8
 
 Write-Host "Ensuring Artifact Registry repository exists..."
 cmd /c "gcloud artifacts repositories describe $Repository --location=$Region --project=$ProjectId >nul 2>nul"
@@ -112,7 +131,9 @@ Write-Host "Building container image..."
 cmd /c "gcloud builds submit --tag $imageUri --project=$ProjectId"
 
 Write-Host "Deploying Cloud Run Job..."
-cmd /c "gcloud run jobs deploy $JobName --image $imageUri --region $Region --project=$ProjectId --service-account $ServiceAccountEmail --set-env-vars $envVars --max-retries 0 --task-timeout ${TaskTimeoutSeconds}s --args run-queue-cycle,--seed"
+cmd /c "gcloud run jobs deploy $JobName --image $imageUri --region $Region --project=$ProjectId --service-account $ServiceAccountEmail --env-vars-file $envFile --max-retries 0 --task-timeout ${TaskTimeoutSeconds}s --args run-queue-cycle,--seed"
+
+Remove-Item -Path $envFile -ErrorAction SilentlyContinue
 
 Write-Host "Cloud Run Job deployed:"
 Write-Host "  Job: $JobName"

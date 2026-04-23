@@ -520,6 +520,8 @@ class AiRetrievalService:
 
         facts = result.facts
         ai_phone = normalize_phone(facts.get("ai_phone") or facts.get("phone"))
+        staff_hints = normalize_staff_hints(facts.get("staff_hints"))
+        staff_page_url = str(facts.get("staff_page_url") or "").strip() or None
         assignments = [
             f"ai_retrieval_status = 'success'",
             f"ai_retrieval_last_error = NULL",
@@ -533,6 +535,9 @@ class AiRetrievalService:
             f"ai_postal_code = {self._sql_literal(facts.get('ai_postal_code') or facts.get('postal_code'))}",
             f"ai_country = {self._sql_literal(normalize_country(facts.get('ai_country') or facts.get('country')))}",
             f"ai_website_url = {self._sql_literal(facts.get('ai_website_url') or facts.get('website_url'))}",
+            f"ai_staff_page_url = {self._sql_literal(staff_page_url)}",
+            f"ai_staff_hints_json = {self._sql_literal(json.dumps(staff_hints, ensure_ascii=True) if staff_hints else None)}",
+            f"ai_staff_hint_count = {len(staff_hints)}",
             f"ai_source_provider = {self._sql_literal(result.provider)}",
             f"ai_source_url = {self._sql_literal((result.citations or [None])[0])}",
             f"ai_confidence_score = {float(result.confidence or 0.0)}",
@@ -701,6 +706,9 @@ def build_account_facts_prompt(account: AiRetrievalAccountCandidate) -> str:
         '  "postal_code": string|null,\n'
         '  "country": string|null,\n'
         '  "website_url": string|null,\n'
+        '  "staff_page_url": string|null,\n'
+        '  "staff_directory_detected": boolean,\n'
+        '  "staff_hints": [{"full_name": string|null, "role_title": string|null, "role_family": string|null, "phone": string|null, "citation_url": string|null}],\n'
         '  "citations": string[],\n'
         '  "confidence": number,\n'
         '  "detail": string\n'
@@ -709,6 +717,8 @@ def build_account_facts_prompt(account: AiRetrievalAccountCandidate) -> str:
         "- Prefer the real dealer rooftop/store facts, not vendor or OEM facts.\n"
         "- Use public web sources only.\n"
         "- Include citation URLs for every fact source you relied on.\n"
+        "- If you find a staff directory or team page, include staff_page_url and any staff_hints you can extract even when email is missing.\n"
+        "- Staff hints should focus on employee names, role titles, role families, and phone numbers when visible.\n"
         "- If you are unsure, leave the field null.\n"
         "- Confidence must be between 0 and 1.\n"
         "- If a known website URL is provided, prioritize it and pages under that domain first.\n"
@@ -764,7 +774,38 @@ def has_account_facts(facts: dict[str, Any]) -> bool:
         or str(facts.get("ai_address_line") or facts.get("address_line") or "").strip()
         or str(facts.get("ai_city") or facts.get("city") or "").strip()
         or str(facts.get("website_url") or facts.get("ai_website_url") or "").strip()
+        or str(facts.get("staff_page_url") or "").strip()
+        or normalize_staff_hints(facts.get("staff_hints"))
     )
+
+
+def normalize_staff_hints(value: Any) -> list[dict[str, str]]:
+    """Normalize partial AI-discovered staff hints into a stable structured list."""
+
+    if not isinstance(value, list):
+        return []
+
+    normalized: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        full_name = str(item.get("full_name") or "").strip()
+        role_title = str(item.get("role_title") or "").strip()
+        role_family = str(item.get("role_family") or "").strip()
+        phone = normalize_phone(item.get("phone"))
+        citation_url = str(item.get("citation_url") or "").strip()
+        if not (full_name or role_title or role_family or phone):
+            continue
+        normalized.append(
+            {
+                "full_name": full_name,
+                "role_title": role_title,
+                "role_family": role_family,
+                "phone": phone or "",
+                "citation_url": citation_url,
+            }
+        )
+    return normalized
 
 
 def normalize_phone(value: Any) -> str | None:
@@ -791,4 +832,3 @@ def normalize_country(value: Any) -> str | None:
     if lowered in {"us", "usa", "united states", "united states of america"}:
         return "United States"
     return value.strip()
-
