@@ -125,7 +125,6 @@ class GeminiRetrievalProvider:
             "tools": [{"googleSearch": {}}, {"urlContext": {}}],
             "generationConfig": {
                 "temperature": 0.1,
-                "responseMimeType": "application/json",
             },
         }
         try:
@@ -184,10 +183,16 @@ class GeminiRetrievalProvider:
             return ""
         content = (candidates[0] or {}).get("content") or {}
         parts = content.get("parts") or []
+        fallback_text = ""
         for part in parts:
             if isinstance(part, dict) and part.get("text"):
-                return str(part["text"])
-        return ""
+                text = str(part["text"])
+                stripped = text.strip()
+                if stripped.startswith("```json") or stripped.startswith("{"):
+                    return text
+                if not fallback_text:
+                    fallback_text = text
+        return fallback_text
 
     def _extract_citations(self, body: dict[str, Any]) -> list[str]:
         citations: list[str] = []
@@ -920,6 +925,7 @@ def normalize_staff_hints(value: Any) -> list[dict[str, str]]:
         role_family = str(item.get("role_family") or "").strip()
         phone = normalize_phone(item.get("phone"))
         citation_url = str(item.get("citation_url") or "").strip()
+        inferred_email = str(item.get("inferred_email") or "").strip().lower()
         if not (full_name or role_title or role_family or phone):
             continue
         normalized.append(
@@ -929,6 +935,7 @@ def normalize_staff_hints(value: Any) -> list[dict[str, str]]:
                 "role_family": role_family,
                 "phone": phone or "",
                 "citation_url": citation_url,
+                "inferred_email": inferred_email,
             }
         )
     return normalized
