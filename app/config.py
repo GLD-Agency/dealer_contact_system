@@ -58,6 +58,7 @@ class Settings:
     managed_fetch_cooldown_hours: int
     ai_retrieval_enabled: bool
     ai_retrieval_provider_order: str
+    ai_retrieval_min_run_interval_minutes: int
     ai_retrieval_cooldown_hours: int
     ai_retrieval_rate_limit_cooldown_minutes: int
     ai_retrieval_request_delay_seconds: float
@@ -229,7 +230,7 @@ def get_settings() -> Settings:
         validate_worker_batch_size=int(os.getenv("VALIDATE_WORKER_BATCH_SIZE", "50")),
         enrich_worker_batch_size=int(os.getenv("ENRICH_WORKER_BATCH_SIZE", "25")),
         gbp_worker_batch_size=int(os.getenv("GBP_WORKER_BATCH_SIZE", "25")),
-        ai_retrieval_batch_size=int(os.getenv("AI_RETRIEVAL_BATCH_SIZE", "15")),
+        ai_retrieval_batch_size=int(os.getenv("AI_RETRIEVAL_BATCH_SIZE", "1")),
         extract_worker_batch_size=int(os.getenv("EXTRACT_WORKER_BATCH_SIZE", "25")),
         retry_blocked_worker_batch_size=int(os.getenv("RETRY_BLOCKED_WORKER_BATCH_SIZE", "10")),
         campaign_monitor_sync_batch_size=int(os.getenv("CAMPAIGN_MONITOR_SYNC_BATCH_SIZE", "100")),
@@ -245,6 +246,7 @@ def get_settings() -> Settings:
         managed_fetch_cooldown_hours=int(os.getenv("MANAGED_FETCH_COOLDOWN_HOURS", "72")),
         ai_retrieval_enabled=os.getenv("AI_RETRIEVAL_ENABLED", "true").lower() == "true",
         ai_retrieval_provider_order=os.getenv("AI_RETRIEVAL_PROVIDER_ORDER", "gemini,openai"),
+        ai_retrieval_min_run_interval_minutes=int(os.getenv("AI_RETRIEVAL_MIN_RUN_INTERVAL_MINUTES", "180")),
         ai_retrieval_cooldown_hours=int(os.getenv("AI_RETRIEVAL_COOLDOWN_HOURS", "72")),
         ai_retrieval_rate_limit_cooldown_minutes=int(os.getenv("AI_RETRIEVAL_RATE_LIMIT_COOLDOWN_MINUTES", "180")),
         ai_retrieval_request_delay_seconds=float(os.getenv("AI_RETRIEVAL_REQUEST_DELAY_SECONDS", "2")),

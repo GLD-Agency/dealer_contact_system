@@ -729,9 +729,10 @@ class DashboardService:
           provider AS label,
           COUNTIF(provider_status = 'success') AS successful_retrievals,
           COUNTIF(provider_status = 'failed') AS failed_retrievals,
+          COUNTIF(provider_status = 'rate_limited') AS rate_limited_retrievals,
           COUNT(*) AS total_attempts
         FROM `{self.settings.ai_retrieval_results_table_fqn}`
-        WHERE retrieved_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
+        WHERE retrieved_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 24 HOUR)
         GROUP BY provider
         ORDER BY total_attempts DESC, provider ASC
         """

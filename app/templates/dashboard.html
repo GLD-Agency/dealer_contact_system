@@ -283,18 +283,18 @@
           </div>
         </article>
 
-        <article class="card">
-          <div class="section-head">
-            <h2>AI Retrieval</h2>
-            <p>Recent provider results for protected-site account facts.</p>
-          </div>
-          <div class="list-stack">
-            {% for row in data.ai_provider_counts %}
-            <div class="metric-row">
-              <span>{{ row.label }}: {{ "{:,}".format(row.successful_retrievals or 0) }} ok / {{ "{:,}".format(row.failed_retrievals or 0) }} failed</span>
-              <strong>{{ "{:,}".format(row.total_attempts or 0) }}</strong>
+          <article class="card">
+            <div class="section-head">
+              <h2>AI Retrieval</h2>
+              <p>Recent provider results from the last 24 hours for protected-site account facts.</p>
             </div>
-            {% endfor %}
+            <div class="list-stack">
+             {% for row in data.ai_provider_counts %}
+              <div class="metric-row">
+               <span>{{ row.label }}: {{ "{:,}".format(row.successful_retrievals or 0) }} ok / {{ "{:,}".format(row.failed_retrievals or 0) }} failed / {{ "{:,}".format(row.rate_limited_retrievals or 0) }} rate-limited</span>
+                <strong>{{ "{:,}".format(row.total_attempts or 0) }}</strong>
+              </div>
+              {% endfor %}
           </div>
         </article>
 

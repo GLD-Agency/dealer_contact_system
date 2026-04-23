@@ -8,7 +8,7 @@ param(
     [int]$ValidateBatchSize = 50,
     [int]$EnrichBatchSize = 25,
     [int]$GbpBatchSize = 25,
-    [int]$AiRetrievalBatchSize = 2,
+    [int]$AiRetrievalBatchSize = 1,
     [int]$ExtractBatchSize = 25,
     [int]$RetryBlockedBatchSize = 10,
     [int]$CampaignMonitorSyncBatchSize = 100,
@@ -78,6 +78,9 @@ if ($env:AI_RETRIEVAL_ENABLED) {
 }
 if ($env:AI_RETRIEVAL_PROVIDER_ORDER) {
     $envVars += "AI_RETRIEVAL_PROVIDER_ORDER=$($env:AI_RETRIEVAL_PROVIDER_ORDER)"
+}
+if ($env:AI_RETRIEVAL_MIN_RUN_INTERVAL_MINUTES) {
+    $envVars += "AI_RETRIEVAL_MIN_RUN_INTERVAL_MINUTES=$($env:AI_RETRIEVAL_MIN_RUN_INTERVAL_MINUTES)"
 }
 if ($env:AI_RETRIEVAL_COOLDOWN_HOURS) {
     $envVars += "AI_RETRIEVAL_COOLDOWN_HOURS=$($env:AI_RETRIEVAL_COOLDOWN_HOURS)"

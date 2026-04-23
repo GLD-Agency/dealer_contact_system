@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import uuid
 
 from app.bigquery_repository import BigQueryRepository
@@ -316,6 +317,10 @@ class WorkQueueService:
         if dry_run:
             return
 
+        if not self._should_run_task_now(task_type):
+            logger.info("Skipped worker run because task is cooling down | task_type=%s", task_type)
+            return
+
         worker_id = str(uuid.uuid4())
         pipeline_run_id = self.run_logger.start_run(
             task_type=task_type,
@@ -373,6 +378,39 @@ class WorkQueueService:
             succeeded_count=len(claimed_account_keys),
             failed_count=0,
         )
+
+    def _should_run_task_now(self, task_type: str) -> bool:
+        """Return True when the task should run on this cycle."""
+
+        if task_type != TASK_AI_ACCOUNT_FACTS:
+            return True
+
+        minimum_interval = max(self.settings.ai_retrieval_min_run_interval_minutes, 0)
+        if minimum_interval <= 0:
+            return True
+
+        query = f"""
+        SELECT
+          MAX(started_at) AS last_started_at
+        FROM `{self.settings.pipeline_runs_table_fqn}`
+        WHERE task_type = '{TASK_AI_ACCOUNT_FACTS}'
+          AND run_status IN ('running', 'completed')
+        """
+        row = self.repository.fetch_one(query)
+        last_started_at = row.get("last_started_at")
+        if not last_started_at:
+            return True
+        if isinstance(last_started_at, str):
+            try:
+                last_started_at = datetime.fromisoformat(last_started_at.replace("Z", "+00:00"))
+            except ValueError:
+                return True
+        if not isinstance(last_started_at, datetime):
+            return True
+        if last_started_at.tzinfo is None:
+            last_started_at = last_started_at.replace(tzinfo=timezone.utc)
+        elapsed_seconds = (datetime.now(timezone.utc) - last_started_at.astimezone(timezone.utc)).total_seconds()
+        return elapsed_seconds >= (minimum_interval * 60)
 
     def _seed_source_query(self, task_type: str) -> str:
         """Return the source query used to seed queue rows."""
