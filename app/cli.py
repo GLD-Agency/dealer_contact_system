@@ -733,6 +733,8 @@ def print_report(repository: BigQueryRepository, settings: Settings) -> None:
       (SELECT COUNTIF(dealer_classification = 'oem') FROM `{settings.dealer_accounts_table_fqn}`) AS validated_oems,
       (SELECT COUNTIF(dealer_classification = 'unknown') FROM `{settings.dealer_accounts_table_fqn}`) AS validated_unknowns,
       (SELECT COUNT(*) FROM `{settings.prospect_contacts_table_fqn}`) AS prospect_contacts,
+      (SELECT COUNTIF(email_quality = 'website_observed') FROM `{settings.prospect_contacts_table_fqn}`) AS observed_email_contacts,
+      (SELECT COUNTIF(email_quality = 'ai_inferred') FROM `{settings.prospect_contacts_table_fqn}`) AS inferred_email_contacts,
       (SELECT COUNT(*) FROM `{settings.prospect_leads_table_fqn}`) AS prospect_leads,
       (SELECT COUNT(*) FROM `{settings.activation_ready_contacts_view_fqn}`) AS activation_ready_contacts,
       (SELECT COUNTIF(audience_type = 'current_client') FROM `{settings.prospect_contacts_table_fqn}`) AS current_client_contacts,
@@ -790,6 +792,8 @@ def print_report(repository: BigQueryRepository, settings: Settings) -> None:
     print(f"Validated OEMs: {report.get('validated_oems', 0)}")
     print(f"Validated unknowns: {report.get('validated_unknowns', 0)}")
     print(f"Prospect contacts: {report.get('prospect_contacts', 0)}")
+    print(f"Observed-email contacts: {report.get('observed_email_contacts', 0)}")
+    print(f"Inferred-email contacts: {report.get('inferred_email_contacts', 0)}")
     print(f"Prospect leads: {report.get('prospect_leads', 0)}")
     print(f"Activation-ready contacts: {report.get('activation_ready_contacts', 0)}")
     print(f"Current-client contacts: {report.get('current_client_contacts', 0)}")

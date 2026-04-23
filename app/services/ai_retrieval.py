@@ -407,6 +407,7 @@ class AiRetrievalService:
             self._record_results(account, provider_results)
             if winning_result:
                 self._apply_account_update(account, winning_result)
+                self._promote_staff_hints(account, winning_result)
                 enriched_accounts += 1
             else:
                 self._mark_attempt_without_update(account, provider_results)
@@ -680,6 +681,330 @@ class AiRetrievalService:
           next_ai_retrieval_at = {cooldown_expression},
           updated_at = CURRENT_TIMESTAMP()
         WHERE dealer_account_id = '{self._escape_sql(account.dealer_account_id)}'
+        """
+        self.repository.execute_statement(query)
+
+    def _promote_staff_hints(
+        self,
+        account: AiRetrievalAccountCandidate,
+        result: AiProviderResult,
+    ) -> None:
+        """Promote AI staff hints with inferred business emails into canonical contacts."""
+
+        staff_hints = normalize_staff_hints(result.facts.get("staff_hints"))
+        promoted = 0
+        for hint in staff_hints:
+            inferred_email = str(hint.get("inferred_email") or "").strip().lower()
+            if not inferred_email:
+                continue
+            full_name = str(hint.get("full_name") or "").strip()
+            role_title = str(hint.get("role_title") or "").strip()
+            citation_url = str(hint.get("citation_url") or "").strip()
+            if not (full_name and role_title and citation_url):
+                continue
+            if self._has_website_observed_contact(account.dealer_account_id, full_name):
+                continue
+            first_name, last_name = split_full_name(full_name)
+            role_family = normalize_role_family(hint.get("role_family"), role_title)
+            role_type = normalize_role_type(role_family)
+            phone_number = normalize_phone(hint.get("phone"))
+            confidence_score = max(0.55, min(float(result.confidence or 0.0) * 0.85, 0.89))
+            self._upsert_ai_contact(
+                dealer_account_id=account.dealer_account_id,
+                account_key=account.account_key,
+                full_name=full_name,
+                first_name=first_name,
+                last_name=last_name,
+                email=inferred_email,
+                email_domain=inferred_email.split("@", 1)[1] if "@" in inferred_email else "",
+                role_type=role_type,
+                role_family=role_family,
+                role_title=role_title,
+                phone_number=phone_number,
+                source_url=citation_url,
+                confidence_score=confidence_score,
+            )
+            self._upsert_ai_relationship(
+                dealer_account_id=account.dealer_account_id,
+                account_key=account.account_key,
+                email=inferred_email,
+                source_url=citation_url,
+                confidence_score=confidence_score,
+            )
+            promoted += 1
+        if promoted:
+            logger.info(
+                "Promoted AI inferred contacts | account_key=%s | promoted=%s",
+                account.account_key,
+                promoted,
+            )
+
+    def _has_website_observed_contact(self, dealer_account_id: str, full_name: str) -> bool:
+        """Return True when the dealer already has a website-observed contact for this person."""
+
+        query = f"""
+        SELECT 1 AS match_found
+        FROM `{self.settings.prospect_contacts_table_fqn}` AS pc
+        JOIN `{self.settings.account_relationships_table_fqn}` AS ar
+          ON ar.prospect_contact_id = pc.prospect_contact_id
+        WHERE ar.dealer_account_id = '{self._escape_sql(dealer_account_id)}'
+          AND pc.source_type = 'website_contact_extraction'
+          AND LOWER(IFNULL(pc.full_name, '')) = '{self._escape_sql(full_name.lower())}'
+        LIMIT 1
+        """
+        return bool(self.repository.fetch_one(query))
+
+    def _upsert_ai_contact(
+        self,
+        *,
+        dealer_account_id: str,
+        account_key: str,
+        full_name: str,
+        first_name: str,
+        last_name: str,
+        email: str,
+        email_domain: str,
+        role_type: str,
+        role_family: str,
+        role_title: str,
+        phone_number: str | None,
+        source_url: str,
+        confidence_score: float,
+    ) -> None:
+        """Insert or update one AI-inferred contact without overriding website-observed data."""
+
+        email_sql = self._escape_sql(email)
+        phone_number_sql = self._sql_literal(phone_number) if phone_number is not None else "CAST(NULL AS STRING)"
+        query = f"""
+        MERGE `{self.settings.prospect_contacts_table_fqn}` AS target
+        USING (
+          SELECT
+            TO_HEX(SHA256('{email_sql}')) AS prospect_contact_id,
+            '{self._escape_sql(full_name)}' AS full_name,
+            '{self._escape_sql(first_name)}' AS first_name,
+            '{self._escape_sql(last_name)}' AS last_name,
+            '{email_sql}' AS email,
+            '{self._escape_sql(email_domain)}' AS email_domain,
+            FALSE AS is_personal_email,
+            'business' AS domain_type,
+            '{self._escape_sql(role_type)}' AS role_type,
+            '{self._escape_sql(role_family)}' AS role_family,
+            '{self._escape_sql(role_title)}' AS role_title,
+            {phone_number_sql} AS phone_number,
+            'ai_inferred' AS email_quality,
+            'ai_inferred_directory_email' AS email_source_type,
+            '{self._escape_sql(source_url)}' AS email_source_url,
+            {confidence_score} AS email_confidence_score,
+            'active' AS contact_status,
+            'activation_ready' AS activation_status,
+            'staged_enriched' AS enrichment_stage,
+            {confidence_score} AS confidence_score,
+            'ai_inferred_directory_email' AS source_type,
+            '{self.settings.dealer_accounts_table}' AS source_table,
+            '{self._escape_sql(source_url)}' AS source_url,
+            CURRENT_TIMESTAMP() AS observed_at
+        ) AS source
+        ON target.prospect_contact_id = source.prospect_contact_id
+        WHEN MATCHED THEN
+          UPDATE SET
+            target.full_name = IF(target.email_quality = 'website_observed', target.full_name, source.full_name),
+            target.first_name = IF(target.email_quality = 'website_observed', target.first_name, source.first_name),
+            target.last_name = IF(target.email_quality = 'website_observed', target.last_name, source.last_name),
+            target.email_domain = COALESCE(target.email_domain, source.email_domain),
+            target.domain_type = COALESCE(target.domain_type, source.domain_type),
+            target.role_type = IF(target.email_quality = 'website_observed', target.role_type, source.role_type),
+            target.role_family = IF(target.email_quality = 'website_observed', target.role_family, source.role_family),
+            target.role_title = IF(target.email_quality = 'website_observed', target.role_title, source.role_title),
+            target.phone_number = COALESCE(target.phone_number, source.phone_number),
+            target.email_quality = CASE
+              WHEN target.email_quality = 'website_observed' THEN target.email_quality
+              ELSE source.email_quality
+            END,
+            target.email_source_type = CASE
+              WHEN target.email_quality = 'website_observed' THEN target.email_source_type
+              ELSE source.email_source_type
+            END,
+            target.email_source_url = CASE
+              WHEN target.email_quality = 'website_observed' THEN target.email_source_url
+              ELSE source.email_source_url
+            END,
+            target.email_confidence_score = GREATEST(IFNULL(target.email_confidence_score, 0.0), source.email_confidence_score),
+            target.contact_status = CASE
+              WHEN target.email_quality = 'website_observed' THEN target.contact_status
+              ELSE source.contact_status
+            END,
+            target.activation_status = CASE
+              WHEN target.email_quality = 'website_observed' THEN target.activation_status
+              ELSE source.activation_status
+            END,
+            target.enrichment_stage = CASE
+              WHEN target.email_quality = 'website_observed' THEN target.enrichment_stage
+              ELSE source.enrichment_stage
+            END,
+            target.confidence_score = GREATEST(IFNULL(target.confidence_score, 0.0), source.confidence_score),
+            target.source_type = CASE
+              WHEN target.email_quality = 'website_observed' THEN target.source_type
+              ELSE source.source_type
+            END,
+            target.source_table = CASE
+              WHEN target.email_quality = 'website_observed' THEN target.source_table
+              ELSE source.source_table
+            END,
+            target.source_url = CASE
+              WHEN target.email_quality = 'website_observed' THEN target.source_url
+              ELSE source.source_url
+            END,
+            target.first_seen_at = LEAST(IFNULL(target.first_seen_at, source.observed_at), source.observed_at),
+            target.last_seen_at = GREATEST(IFNULL(target.last_seen_at, source.observed_at), source.observed_at),
+            target.updated_at = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN
+          INSERT (
+            prospect_contact_id,
+            source_contact_id,
+            full_name,
+            first_name,
+            last_name,
+            email,
+            email_domain,
+            is_personal_email,
+            domain_type,
+            role_type,
+            role_title,
+            role_family,
+            phone_number,
+            email_quality,
+            email_source_type,
+            email_source_url,
+            email_confidence_score,
+            contact_status,
+            enrichment_stage,
+            activation_status,
+            confidence_score,
+            source_type,
+            source_table,
+            source_url,
+            first_seen_at,
+            last_seen_at,
+            created_at,
+            updated_at
+          )
+          VALUES (
+            source.prospect_contact_id,
+            NULL,
+            source.full_name,
+            source.first_name,
+            source.last_name,
+            source.email,
+            source.email_domain,
+            source.is_personal_email,
+            source.domain_type,
+            source.role_type,
+            source.role_title,
+            source.role_family,
+            source.phone_number,
+            source.email_quality,
+            source.email_source_type,
+            source.email_source_url,
+            source.email_confidence_score,
+            source.contact_status,
+            source.enrichment_stage,
+            source.activation_status,
+            source.confidence_score,
+            source.source_type,
+            source.source_table,
+            source.source_url,
+            source.observed_at,
+            source.observed_at,
+            CURRENT_TIMESTAMP(),
+            CURRENT_TIMESTAMP()
+          )
+        """
+        self.repository.execute_statement(query)
+
+    def _upsert_ai_relationship(
+        self,
+        *,
+        dealer_account_id: str,
+        account_key: str,
+        email: str,
+        source_url: str,
+        confidence_score: float,
+    ) -> None:
+        """Insert or update the dealer/account relationship for an AI-inferred contact."""
+
+        account_key_sql = self._escape_sql(account_key)
+        email_sql = self._escape_sql(email)
+        source_url_sql = self._escape_sql(source_url)
+        query = f"""
+        MERGE `{self.settings.account_relationships_table_fqn}` AS target
+        USING (
+          SELECT
+            TO_HEX(SHA256(CONCAT('{account_key_sql}', '|', '{email_sql}'))) AS relationship_id,
+            '{self._escape_sql(dealer_account_id)}' AS dealer_account_id,
+            TO_HEX(SHA256('{email_sql}')) AS prospect_contact_id,
+            'ai_inferred_role_match' AS relationship_type,
+            TRUE AS is_primary,
+            'active' AS relationship_status,
+            {confidence_score} AS confidence_score,
+            'ai_inferred_directory_email' AS source_type,
+            '{self.settings.dealer_accounts_table}' AS source_table,
+            '{source_url_sql}' AS source_url,
+            CURRENT_TIMESTAMP() AS observed_at
+        ) AS source
+        ON target.relationship_id = source.relationship_id
+        WHEN MATCHED THEN
+          UPDATE SET
+            target.relationship_type = source.relationship_type,
+            target.relationship_status = source.relationship_status,
+            target.confidence_score = GREATEST(IFNULL(target.confidence_score, 0.0), source.confidence_score),
+            target.source_type = CASE
+              WHEN target.source_type = 'website_contact_extraction' THEN target.source_type
+              ELSE source.source_type
+            END,
+            target.source_table = CASE
+              WHEN target.source_type = 'website_contact_extraction' THEN target.source_table
+              ELSE source.source_table
+            END,
+            target.source_url = CASE
+              WHEN target.source_type = 'website_contact_extraction' THEN target.source_url
+              ELSE source.source_url
+            END,
+            target.first_seen_at = LEAST(IFNULL(target.first_seen_at, source.observed_at), source.observed_at),
+            target.last_seen_at = GREATEST(IFNULL(target.last_seen_at, source.observed_at), source.observed_at),
+            target.updated_at = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN
+          INSERT (
+            relationship_id,
+            dealer_account_id,
+            prospect_contact_id,
+            relationship_type,
+            is_primary,
+            relationship_status,
+            confidence_score,
+            source_type,
+            source_table,
+            source_url,
+            first_seen_at,
+            last_seen_at,
+            created_at,
+            updated_at
+          )
+          VALUES (
+            source.relationship_id,
+            source.dealer_account_id,
+            source.prospect_contact_id,
+            source.relationship_type,
+            source.is_primary,
+            source.relationship_status,
+            source.confidence_score,
+            source.source_type,
+            source.source_table,
+            source.source_url,
+            source.observed_at,
+            source.observed_at,
+            CURRENT_TIMESTAMP(),
+            CURRENT_TIMESTAMP()
+          )
         """
         self.repository.execute_statement(query)
 

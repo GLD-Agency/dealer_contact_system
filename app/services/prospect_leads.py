@@ -106,6 +106,10 @@ class ProspectLeadService:
             COALESCE(NULLIF(TRIM(da.dealer_classification), ''), 'unclassified') AS dealer_classification,
             COALESCE(NULLIF(TRIM(pc.role_family), ''), 'unclassified') AS role_family,
             NULLIF(TRIM(pc.role_title), '') AS role_title,
+            COALESCE(NULLIF(TRIM(pc.email_quality), ''), 'unknown') AS email_quality,
+            COALESCE(NULLIF(TRIM(pc.email_source_type), ''), NULLIF(TRIM(pc.source_type), ''), 'unknown') AS email_source_type,
+            COALESCE(NULLIF(TRIM(pc.email_source_url), ''), NULLIF(TRIM(pc.source_url), '')) AS email_source_url,
+            COALESCE(pc.email_confidence_score, pc.confidence_score, 0.0) AS email_confidence_score,
             CASE
               WHEN LOWER(COALESCE(pc.contact_status, 'active')) IN ('inactive', 'suppressed', 'invalid') THEN 'hold'
               WHEN LOWER(COALESCE(da.account_status, 'active')) IN ('inactive', 'suppressed') THEN 'hold'
@@ -189,6 +193,10 @@ class ProspectLeadService:
           dealer_classification,
           role_family,
           role_title,
+          email_quality,
+          email_source_type,
+          email_source_url,
+          email_confidence_score,
           activation_status,
           (
             activation_status = 'activation_ready'

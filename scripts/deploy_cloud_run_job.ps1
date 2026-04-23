@@ -8,6 +8,7 @@ param(
     [int]$ValidateBatchSize = 50,
     [int]$EnrichBatchSize = 25,
     [int]$GbpBatchSize = 25,
+    [int]$AiRetrievalBatchSize = 2,
     [int]$ExtractBatchSize = 25,
     [int]$RetryBlockedBatchSize = 10,
     [int]$CampaignMonitorSyncBatchSize = 100,
@@ -32,6 +33,7 @@ $envVars = @(
     "VALIDATE_WORKER_BATCH_SIZE=$ValidateBatchSize",
     "ENRICH_WORKER_BATCH_SIZE=$EnrichBatchSize",
     "GBP_WORKER_BATCH_SIZE=$GbpBatchSize",
+    "AI_RETRIEVAL_BATCH_SIZE=$AiRetrievalBatchSize",
     "EXTRACT_WORKER_BATCH_SIZE=$ExtractBatchSize",
     "RETRY_BLOCKED_WORKER_BATCH_SIZE=$RetryBlockedBatchSize",
     "CAMPAIGN_MONITOR_SYNC_BATCH_SIZE=$CampaignMonitorSyncBatchSize",
@@ -79,6 +81,15 @@ if ($env:AI_RETRIEVAL_PROVIDER_ORDER) {
 }
 if ($env:AI_RETRIEVAL_COOLDOWN_HOURS) {
     $envVars += "AI_RETRIEVAL_COOLDOWN_HOURS=$($env:AI_RETRIEVAL_COOLDOWN_HOURS)"
+}
+if ($env:AI_RETRIEVAL_RATE_LIMIT_COOLDOWN_MINUTES) {
+    $envVars += "AI_RETRIEVAL_RATE_LIMIT_COOLDOWN_MINUTES=$($env:AI_RETRIEVAL_RATE_LIMIT_COOLDOWN_MINUTES)"
+}
+if ($env:AI_RETRIEVAL_REQUEST_DELAY_SECONDS) {
+    $envVars += "AI_RETRIEVAL_REQUEST_DELAY_SECONDS=$($env:AI_RETRIEVAL_REQUEST_DELAY_SECONDS)"
+}
+if ($env:AI_RETRIEVAL_PROMPT_STYLE) {
+    $envVars += "AI_RETRIEVAL_PROMPT_STYLE=$($env:AI_RETRIEVAL_PROMPT_STYLE)"
 }
 if ($env:GEMINI_ENABLED) {
     $envVars += "GEMINI_ENABLED=$($env:GEMINI_ENABLED)"
