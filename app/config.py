@@ -246,7 +246,7 @@ def get_settings() -> Settings:
         managed_fetch_cooldown_hours=int(os.getenv("MANAGED_FETCH_COOLDOWN_HOURS", "72")),
         ai_retrieval_enabled=os.getenv("AI_RETRIEVAL_ENABLED", "true").lower() == "true",
         ai_retrieval_provider_order=os.getenv("AI_RETRIEVAL_PROVIDER_ORDER", "gemini,openai"),
-        ai_retrieval_min_run_interval_minutes=int(os.getenv("AI_RETRIEVAL_MIN_RUN_INTERVAL_MINUTES", "180")),
+        ai_retrieval_min_run_interval_minutes=int(os.getenv("AI_RETRIEVAL_MIN_RUN_INTERVAL_MINUTES", "30")),
         ai_retrieval_cooldown_hours=int(os.getenv("AI_RETRIEVAL_COOLDOWN_HOURS", "72")),
         ai_retrieval_rate_limit_cooldown_minutes=int(os.getenv("AI_RETRIEVAL_RATE_LIMIT_COOLDOWN_MINUTES", "180")),
         ai_retrieval_request_delay_seconds=float(os.getenv("AI_RETRIEVAL_REQUEST_DELAY_SECONDS", "2")),
