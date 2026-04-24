@@ -245,8 +245,12 @@ class ContactExtractionService:
 
         for anchor in soup.find_all("a", href=True):
             href = anchor["href"].strip()
-            full_url = urljoin(homepage.final_url, href)
-            parsed = urlparse(full_url)
+            try:
+                full_url = urljoin(homepage.final_url, href)
+                parsed = urlparse(full_url)
+            except ValueError:
+                logger.debug("Skipping malformed page link during contact extraction | href=%s", href)
+                continue
             if parsed.netloc != base_netloc:
                 continue
 
@@ -368,7 +372,11 @@ class ContactExtractionService:
         for value in [account.get("account_key"), account.get("website_url"), page.final_url]:
             if not value:
                 continue
-            host = urlparse(value).netloc or value
+            try:
+                host = urlparse(value).netloc or value
+            except ValueError:
+                logger.debug("Skipping malformed host while building allowed email domains | value=%s", value)
+                continue
             host = host.lower().strip()
             host = host.removeprefix("www.")
             if host:
