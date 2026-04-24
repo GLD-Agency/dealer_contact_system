@@ -13,7 +13,7 @@ if (-not $InvokerServiceAccountEmail) {
     throw "Provide -InvokerServiceAccountEmail for Cloud Scheduler OAuth."
 }
 
-$uri = "https://run.googleapis.com/apis/run.googleapis.com/v1/namespaces/$ProjectId/jobs/${JobName}:run"
+$uri = "https://run.googleapis.com/v2/projects/$ProjectId/locations/$Region/jobs/${JobName}:run"
 
 Write-Host "Deploying Cloud Scheduler trigger..."
 $existingJob = cmd /c "gcloud scheduler jobs describe $SchedulerName --location $Region --project=$ProjectId" 2>$null
