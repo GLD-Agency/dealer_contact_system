@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
+from urllib.parse import quote
 
 from app.bigquery_repository import BigQueryRepository
 from app.config import Settings
@@ -38,6 +39,7 @@ class DashboardService:
             "environment": self.settings.environment,
             "project_id": self.settings.bigquery_project_id,
             "dataset": self.settings.bigquery_dataset,
+            "table_links": self._get_table_links(),
             "overview": overview,
             "snapshot_summary": self._build_snapshot_summary(latest_snapshot, previous_snapshot),
             "trend_rows": trend_rows,
@@ -53,6 +55,42 @@ class DashboardService:
             "blocked_accounts": self._get_blocked_accounts(),
             "integration_connections": self._get_integration_connections(),
         }
+
+    def _get_table_links(self) -> list[dict[str, str]]:
+        """Return direct BigQuery console links for important read-only tables."""
+
+        return [
+            {
+                "label": "View Client Records",
+                "description": "Open the stable prospect lead table with all client-facing fields.",
+                "table_name": self.settings.prospect_leads_table_fqn,
+                "url": self._build_bigquery_table_url(
+                    self.settings.bigquery_project_id,
+                    self.settings.bigquery_dataset,
+                    self.settings.prospect_leads_table,
+                ),
+            },
+            {
+                "label": "View Canonical Contacts",
+                "description": "Open the underlying prospect contact table for deeper contact-level lineage.",
+                "table_name": self.settings.prospect_contacts_table_fqn,
+                "url": self._build_bigquery_table_url(
+                    self.settings.bigquery_project_id,
+                    self.settings.bigquery_dataset,
+                    self.settings.prospect_contacts_table,
+                ),
+            },
+        ]
+
+    def _build_bigquery_table_url(self, project_id: str, dataset_name: str, table_name: str) -> str:
+        """Build a direct BigQuery console link for one table."""
+
+        resource = f"{project_id}:{dataset_name}.{table_name}"
+        return (
+            "https://console.cloud.google.com/bigquery"
+            f"?project={quote(project_id)}&ws={quote(f'!1m5!1m4!4m3!1s{project_id}!2s{dataset_name}!3s{table_name}')}"
+            f"&page=table&t={quote(resource)}"
+        )
 
     def capture_snapshot(self) -> None:
         """Store one point-in-time dashboard snapshot for trend reporting."""
