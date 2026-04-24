@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import json
 from typing import Any
-from urllib.parse import quote
 
 from app.bigquery_repository import BigQueryRepository
 from app.config import Settings
@@ -39,7 +39,6 @@ class DashboardService:
             "environment": self.settings.environment,
             "project_id": self.settings.bigquery_project_id,
             "dataset": self.settings.bigquery_dataset,
-            "table_links": self._get_table_links(),
             "overview": overview,
             "snapshot_summary": self._build_snapshot_summary(latest_snapshot, previous_snapshot),
             "trend_rows": trend_rows,
@@ -56,41 +55,66 @@ class DashboardService:
             "integration_connections": self._get_integration_connections(),
         }
 
-    def _get_table_links(self) -> list[dict[str, str]]:
-        """Return direct BigQuery console links for important read-only tables."""
+    def get_client_records_page(self, page: int = 1, page_size: int = 100) -> dict[str, Any]:
+        """Return paginated prospect lead rows for the read-only client records UI."""
 
-        return [
-            {
-                "label": "View Client Records",
-                "description": "Open the stable prospect lead table with all client-facing fields.",
-                "table_name": self.settings.prospect_leads_table_fqn,
-                "url": self._build_bigquery_table_url(
-                    self.settings.bigquery_project_id,
-                    self.settings.bigquery_dataset,
-                    self.settings.prospect_leads_table,
-                ),
-            },
-            {
-                "label": "View Canonical Contacts",
-                "description": "Open the underlying prospect contact table for deeper contact-level lineage.",
-                "table_name": self.settings.prospect_contacts_table_fqn,
-                "url": self._build_bigquery_table_url(
-                    self.settings.bigquery_project_id,
-                    self.settings.bigquery_dataset,
-                    self.settings.prospect_contacts_table,
-                ),
-            },
+        safe_page = max(page, 1)
+        safe_page_size = min(max(page_size, 25), 250)
+        offset = (safe_page - 1) * safe_page_size
+
+        count_query = f"""
+        SELECT COUNT(*) AS total_rows
+        FROM `{self.settings.prospect_leads_table_fqn}`
+        """
+        total_rows = int(self.repository.fetch_one(count_query).get("total_rows", 0))
+
+        column_query = f"""
+        SELECT column_name
+        FROM `{self.settings.bigquery_project_id}.{self.settings.bigquery_dataset}.INFORMATION_SCHEMA.COLUMNS`
+        WHERE table_name = '{self.settings.prospect_leads_table}'
+        ORDER BY ordinal_position
+        """
+        columns = [row["column_name"] for row in self.repository.fetch_all(column_query)]
+
+        data_query = f"""
+        SELECT *
+        FROM `{self.settings.prospect_leads_table_fqn}`
+        ORDER BY updated_at DESC NULLS LAST, first_seen_at DESC NULLS LAST, email
+        LIMIT {safe_page_size}
+        OFFSET {offset}
+        """
+        rows = [
+            {key: self._serialize_table_value(value) for key, value in row.items()}
+            for row in self.repository.fetch_all(data_query)
         ]
 
-    def _build_bigquery_table_url(self, project_id: str, dataset_name: str, table_name: str) -> str:
-        """Build a direct BigQuery console link for one table."""
+        total_pages = max((total_rows + safe_page_size - 1) // safe_page_size, 1)
+        return {
+            "generated_at": datetime.now().strftime("%Y-%m-%d %I:%M %p"),
+            "environment": self.settings.environment,
+            "project_id": self.settings.bigquery_project_id,
+            "dataset": self.settings.bigquery_dataset,
+            "table_name": self.settings.prospect_leads_table_fqn,
+            "columns": columns,
+            "rows": rows,
+            "page": safe_page,
+            "page_size": safe_page_size,
+            "total_rows": total_rows,
+            "total_pages": total_pages,
+            "has_previous": safe_page > 1,
+            "has_next": safe_page < total_pages,
+            "previous_page": max(safe_page - 1, 1),
+            "next_page": min(safe_page + 1, total_pages),
+        }
 
-        resource = f"{project_id}:{dataset_name}.{table_name}"
-        return (
-            "https://console.cloud.google.com/bigquery"
-            f"?project={quote(project_id)}&ws={quote(f'!1m5!1m4!4m3!1s{project_id}!2s{dataset_name}!3s{table_name}')}"
-            f"&page=table&t={quote(resource)}"
-        )
+    def _serialize_table_value(self, value: Any) -> str:
+        """Normalize BigQuery values for safe HTML table rendering."""
+
+        if value is None:
+            return ""
+        if isinstance(value, (dict, list, tuple)):
+            return json.dumps(value, default=str)
+        return str(value)
 
     def capture_snapshot(self) -> None:
         """Store one point-in-time dashboard snapshot for trend reporting."""

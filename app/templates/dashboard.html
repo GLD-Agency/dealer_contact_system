@@ -36,21 +36,19 @@
       <section class="card">
         <div class="section-head">
           <h2>Data Access</h2>
-          <p>Quick read-only links into the BigQuery tables behind the client records.</p>
+          <p>Quick read-only access to the live client records table inside this dashboard.</p>
         </div>
         <div class="card-grid table-link-grid">
-          {% for row in data.table_links %}
           <article class="table-link-card">
             <div>
-              <span class="stat-label">{{ row.label }}</span>
-              <strong class="table-link-name">{{ row.table_name }}</strong>
-              <p>{{ row.description }}</p>
+              <span class="stat-label">Client Records</span>
+              <strong class="table-link-name">{{ data.project_id }}.{{ data.dataset }}.prospect_leads</strong>
+              <p>Open the full read-only client records table in the UI so your team can review rows and fields without BigQuery access.</p>
             </div>
-            <a class="table-link-button" href="{{ row.url }}" target="_blank" rel="noopener noreferrer">
-              Open Table
+            <a class="table-link-button" href="{{ url_for('client_records') }}">
+              View Records
             </a>
           </article>
-          {% endfor %}
         </div>
       </section>
 

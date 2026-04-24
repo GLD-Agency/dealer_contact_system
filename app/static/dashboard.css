@@ -263,6 +263,16 @@ h1 {
   background: #9e4929;
 }
 
+.table-link-button-muted {
+  background: rgba(68, 84, 74, 0.12);
+  color: var(--ink);
+  box-shadow: none;
+}
+
+.table-link-button-muted:hover {
+  background: rgba(68, 84, 74, 0.18);
+}
+
 .section-head {
   margin-bottom: 14px;
 }
@@ -350,6 +360,42 @@ tbody tr:last-child td {
   border-bottom: 0;
 }
 
+.records-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: end;
+  margin-bottom: 18px;
+}
+
+.records-toolbar-copy p {
+  margin: 8px 0 0;
+  color: rgba(29, 43, 44, 0.72);
+}
+
+.records-toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.records-table-wrap {
+  overflow: auto;
+  border: 1px solid rgba(68, 84, 74, 0.08);
+  border-radius: 16px;
+}
+
+.records-table {
+  min-width: 1800px;
+}
+
+.records-table td {
+  max-width: 280px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 @media (max-width: 1100px) {
   .hero,
   .metrics-grid,
@@ -363,6 +409,11 @@ tbody tr:last-child td {
 }
 
 @media (max-width: 720px) {
+  .records-toolbar {
+    align-items: start;
+    flex-direction: column;
+  }
+
   .table-link-card {
     align-items: start;
     flex-direction: column;
