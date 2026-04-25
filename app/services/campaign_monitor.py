@@ -567,6 +567,7 @@ class CampaignMonitorService:
             ) AS row_number
           FROM `{self.settings.prospect_leads_table_fqn}`
           WHERE activation_status = 'activation_ready'
+            AND COALESCE(prospecting_allowed_flag, TRUE)
         )
         WHERE row_number = 1
         ORDER BY oem ASC, dealer_name ASC, email ASC

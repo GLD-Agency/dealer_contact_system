@@ -317,6 +317,7 @@ class SchemaManager:
               email_source_type STRING,
               email_source_url STRING,
               email_confidence_score FLOAT64,
+              legal_contact_flag BOOL,
               activation_status STRING,
               marketing_ready_flag BOOL,
               sales_ready_flag BOOL,
@@ -532,6 +533,7 @@ class SchemaManager:
             f"ALTER TABLE `{self.settings.prospect_leads_table_fqn}` ADD COLUMN IF NOT EXISTS email_source_type STRING",
             f"ALTER TABLE `{self.settings.prospect_leads_table_fqn}` ADD COLUMN IF NOT EXISTS email_source_url STRING",
             f"ALTER TABLE `{self.settings.prospect_leads_table_fqn}` ADD COLUMN IF NOT EXISTS email_confidence_score FLOAT64",
+            f"ALTER TABLE `{self.settings.prospect_leads_table_fqn}` ADD COLUMN IF NOT EXISTS legal_contact_flag BOOL",
             f"ALTER TABLE `{self.settings.prospect_leads_table_fqn}` ADD COLUMN IF NOT EXISTS activation_status STRING",
             f"ALTER TABLE `{self.settings.prospect_leads_table_fqn}` ADD COLUMN IF NOT EXISTS marketing_ready_flag BOOL",
             f"ALTER TABLE `{self.settings.prospect_leads_table_fqn}` ADD COLUMN IF NOT EXISTS sales_ready_flag BOOL",
@@ -616,6 +618,11 @@ class SchemaManager:
             pc.source_url,
             da.source_type AS account_source_type,
             da.source_table AS account_source_table,
+            (
+              REGEXP_CONTAINS(LOWER(COALESCE(NULLIF(TRIM(pc.email_domain), ''), '')), r'(law|legal|attorney|attorneys|counsel|esq|esquire)\\.')
+              OR REGEXP_CONTAINS(LOWER(COALESCE(NULLIF(TRIM(da.account_name), ''), '')), r'\b(law|legal|attorney|attorneys|counsel|esq|esquire)\b')
+              OR REGEXP_CONTAINS(LOWER(COALESCE(NULLIF(TRIM(pc.role_title), ''), '')), r'\b(attorney|attorneys|counsel|esq|esquire|lawyer)\b')
+            ) AS legal_contact_flag,
             ROW_NUMBER() OVER (
               PARTITION BY LOWER(pc.email)
               ORDER BY
@@ -641,6 +648,11 @@ class SchemaManager:
             AND TRIM(pc.email) != ''
             AND LOWER(COALESCE(pc.contact_status, 'active')) NOT IN ('inactive', 'suppressed', 'invalid')
             AND COALESCE(pc.activation_status, 'enrichment_needed') = 'activation_ready'
+            AND NOT (
+              REGEXP_CONTAINS(LOWER(COALESCE(NULLIF(TRIM(pc.email_domain), ''), '')), r'(law|legal|attorney|attorneys|counsel|esq|esquire)\\.')
+              OR REGEXP_CONTAINS(LOWER(COALESCE(NULLIF(TRIM(da.account_name), ''), '')), r'\b(law|legal|attorney|attorneys|counsel|esq|esquire)\b')
+              OR REGEXP_CONTAINS(LOWER(COALESCE(NULLIF(TRIM(pc.role_title), ''), '')), r'\b(attorney|attorneys|counsel|esq|esquire|lawyer)\b')
+            )
         )
         SELECT
           prospect_contact_id,

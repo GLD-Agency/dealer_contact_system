@@ -110,6 +110,11 @@ class ProspectLeadService:
             COALESCE(NULLIF(TRIM(pc.email_source_type), ''), NULLIF(TRIM(pc.source_type), ''), 'unknown') AS email_source_type,
             COALESCE(NULLIF(TRIM(pc.email_source_url), ''), NULLIF(TRIM(pc.source_url), '')) AS email_source_url,
             COALESCE(pc.email_confidence_score, pc.confidence_score, 0.0) AS email_confidence_score,
+            (
+              REGEXP_CONTAINS(LOWER(COALESCE(NULLIF(TRIM(pc.email_domain), ''), '')), r'(law|legal|attorney|attorneys|counsel|esq|esquire)\\.')
+              OR REGEXP_CONTAINS(LOWER(COALESCE(NULLIF(TRIM(da.account_name), ''), '')), r'\b(law|legal|attorney|attorneys|counsel|esq|esquire)\b')
+              OR REGEXP_CONTAINS(LOWER(COALESCE(NULLIF(TRIM(pc.role_title), ''), '')), r'\b(attorney|attorneys|counsel|esq|esquire|lawyer)\b')
+            ) AS legal_contact_flag,
             CASE
               WHEN LOWER(COALESCE(pc.contact_status, 'active')) IN ('inactive', 'suppressed', 'invalid') THEN 'hold'
               WHEN LOWER(COALESCE(da.account_status, 'active')) IN ('inactive', 'suppressed') THEN 'hold'
@@ -146,8 +151,19 @@ class ProspectLeadService:
             FALSE AS dim_client_match_flag,
             CAST(NULL AS STRING) AS dim_client_id,
             CAST(NULL AS STRING) AS dim_account_owner,
-            TRUE AS prospecting_allowed_flag,
-            CAST(NULL AS STRING) AS suppression_reason,
+            NOT (
+              REGEXP_CONTAINS(LOWER(COALESCE(NULLIF(TRIM(pc.email_domain), ''), '')), r'(law|legal|attorney|attorneys|counsel|esq|esquire)\\.')
+              OR REGEXP_CONTAINS(LOWER(COALESCE(NULLIF(TRIM(da.account_name), ''), '')), r'\b(law|legal|attorney|attorneys|counsel|esq|esquire)\b')
+              OR REGEXP_CONTAINS(LOWER(COALESCE(NULLIF(TRIM(pc.role_title), ''), '')), r'\b(attorney|attorneys|counsel|esq|esquire|lawyer)\b')
+            ) AS prospecting_allowed_flag,
+            CASE
+              WHEN (
+                REGEXP_CONTAINS(LOWER(COALESCE(NULLIF(TRIM(pc.email_domain), ''), '')), r'(law|legal|attorney|attorneys|counsel|esq|esquire)\\.')
+                OR REGEXP_CONTAINS(LOWER(COALESCE(NULLIF(TRIM(da.account_name), ''), '')), r'\b(law|legal|attorney|attorneys|counsel|esq|esquire)\b')
+                OR REGEXP_CONTAINS(LOWER(COALESCE(NULLIF(TRIM(pc.role_title), ''), '')), r'\b(attorney|attorneys|counsel|esq|esquire|lawyer)\b')
+              ) THEN 'legal_contact'
+              ELSE NULL
+            END AS suppression_reason,
             FALSE AS current_client_override_flag,
             LEAST(
               COALESCE(pc.first_seen_at, CURRENT_TIMESTAMP()),
@@ -197,15 +213,18 @@ class ProspectLeadService:
           email_source_type,
           email_source_url,
           email_confidence_score,
+          legal_contact_flag,
           activation_status,
           (
             activation_status = 'activation_ready'
+            AND NOT legal_contact_flag
             AND COALESCE(TRIM(full_name), '') != ''
             AND COALESCE(TRIM(dealer_name), '') != ''
             AND COALESCE(TRIM(best_phone), '') != ''
           ) AS marketing_ready_flag,
           (
             activation_status = 'activation_ready'
+            AND NOT legal_contact_flag
             AND COALESCE(TRIM(full_name), '') != ''
             AND COALESCE(TRIM(dealer_name), '') != ''
             AND COALESCE(TRIM(best_phone), '') != ''
