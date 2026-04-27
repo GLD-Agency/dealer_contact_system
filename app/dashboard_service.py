@@ -120,21 +120,113 @@ class DashboardService:
         count_query = f"""
         SELECT COUNT(*) AS total_rows
         FROM `{self.settings.discovered_domain_candidates_table_fqn}`
+        WHERE NOT STARTS_WITH(COALESCE(promotion_status, ''), 'rejected')
         """
         total_rows = int(self.repository.fetch_one(count_query).get("total_rows", 0))
 
-        column_query = f"""
-        SELECT column_name
-        FROM `{self.settings.bigquery_project_id}.{self.settings.bigquery_dataset}.INFORMATION_SCHEMA.COLUMNS`
-        WHERE table_name = '{self.settings.discovered_domain_candidates_table}'
-        ORDER BY ordinal_position
+        hidden_rejected_query = f"""
+        SELECT COUNT(*) AS hidden_rejected_rows
+        FROM `{self.settings.discovered_domain_candidates_table_fqn}`
+        WHERE STARTS_WITH(COALESCE(promotion_status, ''), 'rejected')
         """
-        columns = [row["column_name"] for row in self.repository.fetch_all(column_query)]
+        hidden_rejected_rows = int(
+            self.repository.fetch_one(hidden_rejected_query).get("hidden_rejected_rows", 0)
+        )
 
         data_query = f"""
-        SELECT *
-        FROM `{self.settings.discovered_domain_candidates_table_fqn}`
-        ORDER BY updated_at DESC NULLS LAST, discovered_at DESC NULLS LAST, candidate_domain
+        WITH candidate_base AS (
+          SELECT
+            candidate_id,
+            COALESCE(
+              NULLIF(TRIM(candidate_account_name), ''),
+              NULLIF(TRIM(matched.account_name), ''),
+              NULLIF(TRIM(promoted.account_name), ''),
+              candidate_domain
+            ) AS dealer_name,
+            COALESCE(
+              NULLIF(TRIM(matched.inferred_brand), ''),
+              NULLIF(TRIM(promoted.inferred_brand), ''),
+              NULLIF(TRIM(candidate.brand_hint), '')
+            ) AS brand_hint,
+            candidate.market,
+            candidate.country,
+            COALESCE(
+              NULLIF(TRIM(matched.account_state), ''),
+              NULLIF(TRIM(promoted.account_state), ''),
+              NULLIF(TRIM(candidate.state_or_province), '')
+            ) AS state_or_province,
+            COALESCE(
+              NULLIF(TRIM(matched.account_city), ''),
+              NULLIF(TRIM(promoted.account_city), ''),
+              NULLIF(TRIM(candidate.city), '')
+            ) AS city,
+            candidate.candidate_domain,
+            candidate.candidate_website_url,
+            candidate.promotion_status,
+            candidate.promotion_reason,
+            COALESCE(
+              NULLIF(TRIM(candidate.promoted_account_key), ''),
+              NULLIF(TRIM(matched.account_key), ''),
+              NULLIF(TRIM(promoted.account_key), '')
+            ) AS canonical_account_key,
+            ROUND(candidate.confidence_score, 2) AS confidence_score,
+            candidate.source_url,
+            candidate.search_term,
+            candidate.discovered_at,
+            candidate.last_seen_at,
+            candidate.updated_at,
+            (
+              SELECT STRING_AGG(contact_name, ', ' ORDER BY contact_name LIMIT 3)
+              FROM (
+                SELECT DISTINCT NULLIF(TRIM(full_name), '') AS contact_name
+                FROM `{self.settings.prospect_leads_table_fqn}` AS lead
+                WHERE lead.account_key = COALESCE(
+                  NULLIF(TRIM(candidate.promoted_account_key), ''),
+                  NULLIF(TRIM(matched.account_key), ''),
+                  NULLIF(TRIM(promoted.account_key), '')
+                )
+                  AND NULLIF(TRIM(full_name), '') IS NOT NULL
+              )
+            ) AS contact_names
+          FROM `{self.settings.discovered_domain_candidates_table_fqn}` AS candidate
+          LEFT JOIN `{self.settings.dealer_accounts_table_fqn}` AS matched
+            ON matched.account_key = candidate.candidate_domain
+            OR REGEXP_REPLACE(LOWER(COALESCE(matched.website_url, '')), r'^https?://(www\\.)?', '') = candidate.candidate_domain
+          LEFT JOIN `{self.settings.dealer_accounts_table_fqn}` AS promoted
+            ON promoted.account_key = candidate.promoted_account_key
+          WHERE NOT STARTS_WITH(COALESCE(candidate.promotion_status, ''), 'rejected')
+        )
+        SELECT
+          candidate_id,
+          dealer_name,
+          brand_hint,
+          contact_names,
+          candidate_domain,
+          candidate_website_url,
+          promotion_status,
+          promotion_reason,
+          canonical_account_key,
+          market,
+          country,
+          state_or_province,
+          city,
+          confidence_score,
+          source_url,
+          search_term,
+          discovered_at,
+          last_seen_at,
+          updated_at
+        FROM candidate_base
+        ORDER BY
+          CASE promotion_status
+            WHEN 'new' THEN 0
+            WHEN 'promoted_to_main_pipeline' THEN 1
+            WHEN 'duplicate_existing' THEN 2
+            ELSE 3
+          END,
+          updated_at DESC NULLS LAST,
+          discovered_at DESC NULLS LAST,
+          candidate_domain
         LIMIT {safe_page_size}
         OFFSET {offset}
         """
@@ -142,6 +234,42 @@ class DashboardService:
             {key: self._serialize_table_value(value) for key, value in row.items()}
             for row in self.repository.fetch_all(data_query)
         ]
+
+        columns = [
+            "dealer_name",
+            "brand_hint",
+            "contact_names",
+            "candidate_domain",
+            "candidate_website_url",
+            "promotion_status",
+            "promotion_reason",
+            "canonical_account_key",
+            "market",
+            "country",
+            "state_or_province",
+            "city",
+            "confidence_score",
+            "source_url",
+            "search_term",
+            "discovered_at",
+            "last_seen_at",
+            "updated_at",
+            "candidate_id",
+        ]
+
+        activity_query = f"""
+        SELECT
+          MAX(started_at) AS last_run_at,
+          ARRAY_AGG(run_notes IGNORE NULLS ORDER BY started_at DESC LIMIT 1)[OFFSET(0)] AS last_run_notes,
+          COUNTIF(started_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 24 HOUR)) AS runs_last_24h,
+          COUNTIF(
+            started_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 24 HOUR)
+            AND REGEXP_CONTAINS(COALESCE(run_notes, ''), r'wrote [1-9][0-9]* candidate row')
+          ) AS productive_runs_last_24h
+        FROM `{self.settings.domain_discovery_runs_table_fqn}`
+        WHERE run_type = 'search'
+        """
+        activity = self.repository.fetch_one(activity_query)
 
         total_pages = max((total_rows + safe_page_size - 1) // safe_page_size, 1)
         return {
@@ -155,11 +283,16 @@ class DashboardService:
             "page": safe_page,
             "page_size": safe_page_size,
             "total_rows": total_rows,
+            "hidden_rejected_rows": hidden_rejected_rows,
             "total_pages": total_pages,
             "has_previous": safe_page > 1,
             "has_next": safe_page < total_pages,
             "previous_page": max(safe_page - 1, 1),
             "next_page": min(safe_page + 1, total_pages),
+            "last_run_at": self._format_timestamp(activity.get("last_run_at")),
+            "last_run_notes": str(activity.get("last_run_notes") or "").strip(),
+            "runs_last_24h": int(activity.get("runs_last_24h", 0) or 0),
+            "productive_runs_last_24h": int(activity.get("productive_runs_last_24h", 0) or 0),
         }
 
     def _serialize_table_value(self, value: Any) -> str:
