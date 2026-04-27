@@ -293,7 +293,7 @@
         <article class="card">
           <div class="section-head">
             <h2>Discovery Lane</h2>
-            <p>Separate search-only system for new candidate dealer domains.</p>
+            <p>Separate search-only system for new candidate dealer domains, with its own runtime and egress.</p>
           </div>
           <div class="list-stack">
             <div class="metric-row">
@@ -327,6 +327,22 @@
             <div class="metric-row">
               <span>Last Discovery Run</span>
               <strong>{{ data.discovery_overview.last_run_at or "-" }}</strong>
+            </div>
+          </div>
+          <div class="mini-subsection">
+            <div class="mini-subsection-head">
+              <h3>Discovery Infrastructure</h3>
+              <a class="table-link-button table-link-button-muted" href="{{ url_for('discovery_candidates') }}">
+                View Discovery Table
+              </a>
+            </div>
+            <div class="compact-metric-grid">
+              {% for row in data.discovery_runtime %}
+              <div class="compact-metric-card">
+                <span class="stat-label">{{ row.label }}</span>
+                <strong>{{ row.value }}</strong>
+              </div>
+              {% endfor %}
             </div>
           </div>
         </article>

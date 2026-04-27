@@ -41,6 +41,7 @@ class DashboardService:
             "dataset": self.settings.bigquery_dataset,
             "overview": overview,
             "discovery_overview": self._get_discovery_overview(),
+            "discovery_runtime": self._get_discovery_runtime_details(),
             "snapshot_summary": self._build_snapshot_summary(latest_snapshot, previous_snapshot),
             "trend_rows": trend_rows,
             "trend_cards": self._build_trend_cards(trend_rows),
@@ -315,6 +316,36 @@ class DashboardService:
           ) AS last_run_at
         """
         return self.repository.fetch_one(query)
+
+    def _get_discovery_runtime_details(self) -> list[dict[str, str]]:
+        """Return compact runtime details for the separate discovery worker."""
+
+        return [
+            {
+                "label": "Cloud Run Job",
+                "value": self.settings.domain_discovery_job_name,
+            },
+            {
+                "label": "Scheduler",
+                "value": self.settings.domain_discovery_scheduler_name,
+            },
+            {
+                "label": "Cadence",
+                "value": self.settings.domain_discovery_schedule_hint,
+            },
+            {
+                "label": "VPC Connector",
+                "value": self.settings.domain_discovery_vpc_connector or "-",
+            },
+            {
+                "label": "Egress Mode",
+                "value": self.settings.domain_discovery_vpc_egress or "-",
+            },
+            {
+                "label": "Dedicated Egress IP",
+                "value": self.settings.domain_discovery_egress_ip or "-",
+            },
+        ]
 
     def _get_latest_snapshot(self) -> dict[str, Any]:
         """Return the newest stored dashboard snapshot."""

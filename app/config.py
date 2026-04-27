@@ -57,6 +57,11 @@ class Settings:
     domain_discovery_promotion_enabled: bool
     domain_discovery_schedule_hint: str
     domain_discovery_search_endpoint: str
+    domain_discovery_job_name: str
+    domain_discovery_scheduler_name: str
+    domain_discovery_vpc_connector: str
+    domain_discovery_vpc_egress: str
+    domain_discovery_egress_ip: str
     gbp_enrichment_enabled: bool
     gbp_provider: str
     gbp_search_endpoint: str
@@ -279,6 +284,11 @@ def get_settings() -> Settings:
             "DOMAIN_DISCOVERY_SEARCH_ENDPOINT",
             "https://html.duckduckgo.com/html/",
         ),
+        domain_discovery_job_name=os.getenv("DOMAIN_DISCOVERY_JOB_NAME", "dealer-domain-discovery-worker"),
+        domain_discovery_scheduler_name=os.getenv("DOMAIN_DISCOVERY_SCHEDULER_NAME", "dealer-domain-discovery-schedule"),
+        domain_discovery_vpc_connector=os.getenv("DOMAIN_DISCOVERY_VPC_CONNECTOR", "dealer-discovery-conn"),
+        domain_discovery_vpc_egress=os.getenv("DOMAIN_DISCOVERY_VPC_EGRESS", "all-traffic"),
+        domain_discovery_egress_ip=os.getenv("DOMAIN_DISCOVERY_EGRESS_IP", "34.45.226.9"),
         gbp_enrichment_enabled=os.getenv("GBP_ENRICHMENT_ENABLED", "true").lower() == "true",
         gbp_provider=os.getenv("GBP_PROVIDER", "duckduckgo_search_fallback"),
         gbp_search_endpoint=os.getenv("GBP_SEARCH_ENDPOINT", "https://html.duckduckgo.com/html/"),
