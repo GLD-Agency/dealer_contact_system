@@ -31,6 +31,7 @@ class Settings:
     domain_discovery_queue_table: str
     domain_discovery_runs_table: str
     discovered_domain_candidates_table: str
+    metro_discovery_targets_table: str
     dashboard_snapshots_table: str
     external_seed_contacts_table: str
     prospect_leads_table: str
@@ -175,6 +176,12 @@ class Settings:
         return self.table_fqn(self.discovered_domain_candidates_table)
 
     @property
+    def metro_discovery_targets_table_fqn(self) -> str:
+        """Return the fully qualified metro discovery targets table name."""
+
+        return self.table_fqn(self.metro_discovery_targets_table)
+
+    @property
     def dashboard_snapshots_table_fqn(self) -> str:
         """Return the fully qualified dashboard snapshots table name."""
 
@@ -252,6 +259,10 @@ def get_settings() -> Settings:
         discovered_domain_candidates_table=os.getenv(
             "DISCOVERED_DOMAIN_CANDIDATES_TABLE",
             "discovered_domain_candidates",
+        ),
+        metro_discovery_targets_table=os.getenv(
+            "METRO_DISCOVERY_TARGETS_TABLE",
+            "metro_discovery_targets",
         ),
         dashboard_snapshots_table=os.getenv("DASHBOARD_SNAPSHOTS_TABLE", "dashboard_snapshots"),
         external_seed_contacts_table=os.getenv("EXTERNAL_SEED_CONTACTS_TABLE", "external_seed_contacts"),

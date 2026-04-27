@@ -15,6 +15,7 @@ import requests
 from app.bigquery_repository import BigQueryRepository
 from app.config import Settings
 from app.logging_utils import get_logger
+from app.metro_targets import METRO_DISCOVERY_TARGETS
 from app.web_fetcher import DEFAULT_HEADERS
 
 
@@ -123,6 +124,20 @@ class DiscoveryQueueItem:
     country: str
     state_or_province: str | None
     city: str | None
+
+
+@dataclass(frozen=True)
+class DiscoveryMetroTarget:
+    """One ranked metro market used to drive discovery search coverage."""
+
+    metro_target_id: str
+    metro_key: str
+    metro_name: str
+    city: str
+    state_or_province: str
+    country: str
+    market: str
+    population_rank: int
 
 
 @dataclass(frozen=True)
@@ -241,12 +256,14 @@ class DomainDiscoveryService:
     def seed_queue(self, dry_run: bool = False) -> int:
         """Seed discovery search terms from existing brand and geography coverage."""
 
+        self._ensure_metro_targets_seeded(dry_run=dry_run)
         tasks = self._build_seed_tasks()
         if dry_run:
             return len(tasks)
         if not tasks:
             return 0
         self._merge_seed_tasks(tasks)
+        self._mark_metro_targets_seeded(tasks)
         return len(tasks)
 
     def run_worker(self, dry_run: bool = False, batch_size: int | None = None) -> DomainDiscoveryResult:
@@ -429,7 +446,271 @@ class DomainDiscoveryService:
         return {key: int(row.get(key, 0) or 0) for key in row.keys()}
 
     def _build_seed_tasks(self) -> list[DiscoverySeedTask]:
-        """Generate search tasks from known brands and geographies."""
+        """Generate search tasks from ranked metro targets and known brand coverage."""
+
+        metros = self._load_ranked_metro_targets()
+        brands = self._load_ranked_brand_hints()
+        if not metros or not brands:
+            return self._build_fallback_seed_tasks()
+
+        us_tasks: list[DiscoverySeedTask] = []
+        canada_tasks: list[DiscoverySeedTask] = []
+        seen: set[str] = set()
+        expansions = ("dealer", "dealership", "motors")
+        us_metros = [metro for metro in metros if metro.country != "Canada"]
+        canada_metros = [metro for metro in metros if metro.country == "Canada"]
+
+        us_combo_target, canada_combo_target = self._metro_combo_targets(len(expansions))
+        selected_us = us_metros[:us_combo_target]
+        selected_canada = canada_metros[:canada_combo_target]
+
+        def append_market_tasks(target_metros: list[DiscoveryMetroTarget], bucket: list[DiscoverySeedTask]) -> None:
+            brand_index = 0
+            for metro in target_metros:
+                brand = brands[brand_index % len(brands)]
+                brand_index += 1
+                location_parts = [metro.city, metro.state_or_province, metro.country]
+                for expansion in expansions:
+                    search_term = " ".join([brand, expansion, *location_parts]).strip()
+                    dedupe_key = self._normalize_key(search_term)
+                    if dedupe_key in seen:
+                        continue
+                    seen.add(dedupe_key)
+                    bucket.append(
+                        DiscoverySeedTask(
+                            dedupe_key=dedupe_key,
+                            search_term=search_term,
+                            brand_hint=brand,
+                            market=metro.market,
+                            country=metro.country,
+                            state_or_province=metro.state_or_province,
+                            city=metro.city,
+                            priority=0,
+                        )
+                    )
+
+        append_market_tasks(selected_us, us_tasks)
+        append_market_tasks(selected_canada, canada_tasks)
+        return self._weighted_rotate_seed_tasks(us_tasks, canada_tasks)
+
+    def _weighted_rotate_seed_tasks(
+        self,
+        us_tasks: list[DiscoverySeedTask],
+        canada_tasks: list[DiscoverySeedTask],
+    ) -> list[DiscoverySeedTask]:
+        """Return discovery tasks in a rotated U.S./Canada order with weighted shares."""
+
+        final_limit = max(self.settings.domain_discovery_query_batch_size, 1)
+        us_share = min(max(self.settings.domain_discovery_us_share_percent, 0), 100) / 100.0
+        canada_share = 1.0 - us_share
+
+        if not canada_tasks:
+            return self._assign_rotated_priorities(us_tasks[:final_limit])
+        if not us_tasks:
+            return self._assign_rotated_priorities(canada_tasks[:final_limit])
+
+        canada_target = min(
+            len(canada_tasks),
+            max(1, int(round(final_limit * canada_share))),
+        )
+        us_target = min(len(us_tasks), final_limit - canada_target)
+        if us_target + canada_target < final_limit:
+            remaining = final_limit - (us_target + canada_target)
+            extra_us = min(len(us_tasks) - us_target, remaining)
+            us_target += extra_us
+            remaining -= extra_us
+            if remaining > 0:
+                canada_target += min(len(canada_tasks) - canada_target, remaining)
+
+        selected_us = us_tasks[:us_target]
+        selected_canada = canada_tasks[:canada_target]
+
+        rotated: list[DiscoverySeedTask] = []
+        us_index = 0
+        canada_index = 0
+        while len(rotated) < final_limit and (us_index < len(selected_us) or canada_index < len(selected_canada)):
+            if canada_index >= len(selected_canada):
+                rotated.append(selected_us[us_index])
+                us_index += 1
+                continue
+            if us_index >= len(selected_us):
+                rotated.append(selected_canada[canada_index])
+                canada_index += 1
+                continue
+
+            next_position = len(rotated) + 1
+            desired_canada_so_far = round(next_position * canada_share)
+            if canada_index < desired_canada_so_far:
+                rotated.append(selected_canada[canada_index])
+                canada_index += 1
+            else:
+                rotated.append(selected_us[us_index])
+                us_index += 1
+
+        return self._assign_rotated_priorities(rotated[:final_limit])
+
+    def _metro_combo_targets(self, expansion_count: int) -> tuple[int, int]:
+        """Return how many metro-brand combinations to seed per market this run."""
+
+        final_limit = max(self.settings.domain_discovery_query_batch_size, 1)
+        us_share = min(max(self.settings.domain_discovery_us_share_percent, 0), 100) / 100.0
+        canada_share = 1.0 - us_share
+        us_task_target = max(1, int(round(final_limit * us_share)))
+        canada_task_target = max(1, final_limit - us_task_target)
+        us_combos = max(1, (us_task_target + expansion_count - 1) // expansion_count)
+        canada_combos = max(1, (canada_task_target + expansion_count - 1) // expansion_count)
+        return us_combos, canada_combos
+
+    def _ensure_metro_targets_seeded(self, dry_run: bool = False) -> None:
+        """Seed the ranked metro target table if it is empty."""
+
+        count_query = f"""
+        SELECT COUNT(*) AS total_rows
+        FROM `{self.settings.metro_discovery_targets_table_fqn}`
+        """
+        total_rows = int(self.repository.fetch_one(count_query).get("total_rows", 0) or 0)
+        if total_rows > 0 or dry_run:
+            return
+
+        rows = []
+        for metro in METRO_DISCOVERY_TARGETS:
+            rows.append(
+                "SELECT "
+                f"GENERATE_UUID() AS metro_target_id, "
+                f"'{self._escape(str(metro['metro_key']))}' AS metro_key, "
+                f"'{self._escape(str(metro['metro_name']))}' AS metro_name, "
+                f"'{self._escape(str(metro['city']))}' AS city, "
+                f"'{self._escape(str(metro['state_or_province']))}' AS state_or_province, "
+                f"'{self._escape(str(metro['country']))}' AS country, "
+                f"'{self._escape(str(metro['market']))}' AS market, "
+                f"{int(metro['population_rank'])} AS population_rank, "
+                "TRUE AS active, "
+                "CAST(NULL AS TIMESTAMP) AS last_seeded_at, "
+                "CAST(NULL AS TIMESTAMP) AS last_discovered_at"
+            )
+        source_sql = "\nUNION ALL\n".join(rows)
+        query = f"""
+        MERGE `{self.settings.metro_discovery_targets_table_fqn}` AS target
+        USING (
+          {source_sql}
+        ) AS source
+        ON target.metro_key = source.metro_key
+        WHEN NOT MATCHED THEN
+          INSERT (
+            metro_target_id,
+            metro_key,
+            metro_name,
+            city,
+            state_or_province,
+            country,
+            market,
+            population_rank,
+            active,
+            last_seeded_at,
+            last_discovered_at,
+            created_at,
+            updated_at
+          )
+          VALUES (
+            source.metro_target_id,
+            source.metro_key,
+            source.metro_name,
+            source.city,
+            source.state_or_province,
+            source.country,
+            source.market,
+            source.population_rank,
+            source.active,
+            source.last_seeded_at,
+            source.last_discovered_at,
+            CURRENT_TIMESTAMP(),
+            CURRENT_TIMESTAMP()
+          )
+        """
+        self.repository.execute_statement(query)
+
+    def _load_ranked_metro_targets(self) -> list[DiscoveryMetroTarget]:
+        """Load active metro targets in rotation order."""
+
+        query = f"""
+        SELECT
+          metro_target_id,
+          metro_key,
+          metro_name,
+          city,
+          state_or_province,
+          country,
+          market,
+          population_rank
+        FROM `{self.settings.metro_discovery_targets_table_fqn}`
+        WHERE COALESCE(active, TRUE)
+        ORDER BY
+          COALESCE(last_seeded_at, TIMESTAMP('1970-01-01')) ASC,
+          population_rank ASC,
+          metro_name ASC
+        """
+        rows = self.repository.fetch_all(query)
+        if not rows:
+            return [
+                DiscoveryMetroTarget(
+                    metro_target_id=str(index + 1),
+                    metro_key=str(metro["metro_key"]),
+                    metro_name=str(metro["metro_name"]),
+                    city=str(metro["city"]),
+                    state_or_province=str(metro["state_or_province"]),
+                    country=str(metro["country"]),
+                    market=str(metro["market"]),
+                    population_rank=int(metro["population_rank"]),
+                )
+                for index, metro in enumerate(METRO_DISCOVERY_TARGETS)
+            ]
+        return [
+            DiscoveryMetroTarget(
+                metro_target_id=str(row["metro_target_id"]),
+                metro_key=str(row["metro_key"]),
+                metro_name=str(row["metro_name"]),
+                city=str(row["city"]),
+                state_or_province=str(row["state_or_province"]),
+                country=str(row["country"]),
+                market=str(row["market"]),
+                population_rank=int(row.get("population_rank") or 0),
+            )
+            for row in rows
+        ]
+
+    def _load_ranked_brand_hints(self) -> list[str]:
+        """Load brand hints ordered by current system prevalence."""
+
+        query = f"""
+        WITH brand_counts AS (
+          SELECT inferred_brand AS brand_hint, COUNT(*) AS total_count
+          FROM `{self.settings.dealer_accounts_table_fqn}`
+          WHERE inferred_brand IS NOT NULL
+            AND TRIM(inferred_brand) != ''
+            AND dealer_classification IN ('dealer', 'dealer_group')
+          GROUP BY inferred_brand
+
+          UNION ALL
+
+          SELECT oem AS brand_hint, COUNT(*) AS total_count
+          FROM `{self.settings.prospect_leads_table_fqn}`
+          WHERE oem IS NOT NULL
+            AND TRIM(oem) != ''
+          GROUP BY oem
+        )
+        SELECT brand_hint
+        FROM brand_counts
+        WHERE brand_hint IS NOT NULL
+          AND TRIM(brand_hint) != ''
+          AND LOWER(TRIM(brand_hint)) != 'unknown'
+        GROUP BY brand_hint
+        ORDER BY SUM(total_count) DESC, brand_hint ASC
+        LIMIT 40
+        """
+        return [str(row["brand_hint"]).strip() for row in self.repository.fetch_all(query) if str(row.get("brand_hint") or "").strip()]
+
+    def _build_fallback_seed_tasks(self) -> list[DiscoverySeedTask]:
+        """Fallback to the older geography-driven seeding when metro inputs are unavailable."""
 
         source_query = f"""
         SELECT DISTINCT
@@ -525,61 +806,25 @@ class DomainDiscoveryService:
                 )
         return self._weighted_rotate_seed_tasks(us_tasks, canada_tasks)
 
-    def _weighted_rotate_seed_tasks(
-        self,
-        us_tasks: list[DiscoverySeedTask],
-        canada_tasks: list[DiscoverySeedTask],
-    ) -> list[DiscoverySeedTask]:
-        """Return discovery tasks in a rotated U.S./Canada order with weighted shares."""
+    def _mark_metro_targets_seeded(self, tasks: list[DiscoverySeedTask]) -> None:
+        """Advance metro rotation for the metros used in this seed pass."""
 
-        final_limit = max(self.settings.domain_discovery_query_batch_size, 1)
-        us_share = min(max(self.settings.domain_discovery_us_share_percent, 0), 100) / 100.0
-        canada_share = 1.0 - us_share
-
-        if not canada_tasks:
-            return self._assign_rotated_priorities(us_tasks[:final_limit])
-        if not us_tasks:
-            return self._assign_rotated_priorities(canada_tasks[:final_limit])
-
-        canada_target = min(
-            len(canada_tasks),
-            max(1, int(round(final_limit * canada_share))),
-        )
-        us_target = min(len(us_tasks), final_limit - canada_target)
-        if us_target + canada_target < final_limit:
-            remaining = final_limit - (us_target + canada_target)
-            extra_us = min(len(us_tasks) - us_target, remaining)
-            us_target += extra_us
-            remaining -= extra_us
-            if remaining > 0:
-                canada_target += min(len(canada_tasks) - canada_target, remaining)
-
-        selected_us = us_tasks[:us_target]
-        selected_canada = canada_tasks[:canada_target]
-
-        rotated: list[DiscoverySeedTask] = []
-        us_index = 0
-        canada_index = 0
-        while len(rotated) < final_limit and (us_index < len(selected_us) or canada_index < len(selected_canada)):
-            if canada_index >= len(selected_canada):
-                rotated.append(selected_us[us_index])
-                us_index += 1
-                continue
-            if us_index >= len(selected_us):
-                rotated.append(selected_canada[canada_index])
-                canada_index += 1
-                continue
-
-            next_position = len(rotated) + 1
-            desired_canada_so_far = round(next_position * canada_share)
-            if canada_index < desired_canada_so_far:
-                rotated.append(selected_canada[canada_index])
-                canada_index += 1
-            else:
-                rotated.append(selected_us[us_index])
-                us_index += 1
-
-        return self._assign_rotated_priorities(rotated[:final_limit])
+        metro_keys = {
+            f"{'ca' if task.country == 'Canada' else 'us'}-{self._normalize_key(task.city or '')}-{self._normalize_key(task.state_or_province or '')}"
+            for task in tasks
+            if task.city and task.state_or_province
+        }
+        if not metro_keys:
+            return
+        metro_keys_sql = ", ".join(f"'{self._escape(key)}'" for key in sorted(metro_keys))
+        query = f"""
+        UPDATE `{self.settings.metro_discovery_targets_table_fqn}`
+        SET
+          last_seeded_at = CURRENT_TIMESTAMP(),
+          updated_at = CURRENT_TIMESTAMP()
+        WHERE metro_key IN ({metro_keys_sql})
+        """
+        self.repository.execute_statement(query)
 
     def _assign_rotated_priorities(self, tasks: list[DiscoverySeedTask]) -> list[DiscoverySeedTask]:
         """Assign descending queue priority while preserving the rotated seed order."""

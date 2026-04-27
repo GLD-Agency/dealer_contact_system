@@ -275,6 +275,23 @@ class SchemaManager:
               last_seen_at TIMESTAMP
             )
             """,
+            self.settings.metro_discovery_targets_table_fqn: f"""
+            CREATE TABLE IF NOT EXISTS `{self.settings.metro_discovery_targets_table_fqn}` (
+              metro_target_id STRING NOT NULL,
+              metro_key STRING NOT NULL,
+              metro_name STRING NOT NULL,
+              city STRING NOT NULL,
+              state_or_province STRING NOT NULL,
+              country STRING NOT NULL,
+              market STRING NOT NULL,
+              population_rank INT64,
+              active BOOL,
+              last_seeded_at TIMESTAMP,
+              last_discovered_at TIMESTAMP,
+              created_at TIMESTAMP,
+              updated_at TIMESTAMP
+            )
+            """,
             self.settings.ai_retrieval_results_table_fqn: f"""
             CREATE TABLE IF NOT EXISTS `{self.settings.ai_retrieval_results_table_fqn}` (
               ai_retrieval_result_id STRING NOT NULL,
@@ -576,6 +593,16 @@ class SchemaManager:
             f"ALTER TABLE `{self.settings.discovered_domain_candidates_table_fqn}` ADD COLUMN IF NOT EXISTS promotion_reason STRING",
             f"ALTER TABLE `{self.settings.discovered_domain_candidates_table_fqn}` ADD COLUMN IF NOT EXISTS promoted_account_key STRING",
             f"ALTER TABLE `{self.settings.discovered_domain_candidates_table_fqn}` ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP",
+            f"ALTER TABLE `{self.settings.metro_discovery_targets_table_fqn}` ADD COLUMN IF NOT EXISTS metro_key STRING",
+            f"ALTER TABLE `{self.settings.metro_discovery_targets_table_fqn}` ADD COLUMN IF NOT EXISTS metro_name STRING",
+            f"ALTER TABLE `{self.settings.metro_discovery_targets_table_fqn}` ADD COLUMN IF NOT EXISTS city STRING",
+            f"ALTER TABLE `{self.settings.metro_discovery_targets_table_fqn}` ADD COLUMN IF NOT EXISTS state_or_province STRING",
+            f"ALTER TABLE `{self.settings.metro_discovery_targets_table_fqn}` ADD COLUMN IF NOT EXISTS country STRING",
+            f"ALTER TABLE `{self.settings.metro_discovery_targets_table_fqn}` ADD COLUMN IF NOT EXISTS market STRING",
+            f"ALTER TABLE `{self.settings.metro_discovery_targets_table_fqn}` ADD COLUMN IF NOT EXISTS population_rank INT64",
+            f"ALTER TABLE `{self.settings.metro_discovery_targets_table_fqn}` ADD COLUMN IF NOT EXISTS active BOOL",
+            f"ALTER TABLE `{self.settings.metro_discovery_targets_table_fqn}` ADD COLUMN IF NOT EXISTS last_seeded_at TIMESTAMP",
+            f"ALTER TABLE `{self.settings.metro_discovery_targets_table_fqn}` ADD COLUMN IF NOT EXISTS last_discovered_at TIMESTAMP",
             f"ALTER TABLE `{self.settings.dashboard_snapshots_table_fqn}` ADD COLUMN IF NOT EXISTS accounts_with_phone INT64",
             f"ALTER TABLE `{self.settings.dashboard_snapshots_table_fqn}` ADD COLUMN IF NOT EXISTS accounts_with_website_phone INT64",
             f"ALTER TABLE `{self.settings.dashboard_snapshots_table_fqn}` ADD COLUMN IF NOT EXISTS accounts_with_gbp_phone INT64",
