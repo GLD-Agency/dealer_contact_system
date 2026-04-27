@@ -504,6 +504,26 @@ Included deployment helpers:
 - [scripts/deploy_dashboard_service.ps1](/C:/Users/brent/OneDrive/Desktop/dealer_contact_system/scripts/deploy_dashboard_service.ps1)
 - [scripts/deploy_domain_discovery_job.ps1](/C:/Users/brent/OneDrive/Desktop/dealer_contact_system/scripts/deploy_domain_discovery_job.ps1)
 - [scripts/deploy_domain_discovery_scheduler.ps1](/C:/Users/brent/OneDrive/Desktop/dealer_contact_system/scripts/deploy_domain_discovery_scheduler.ps1)
+- [scripts/setup_domain_discovery_egress.ps1](/C:/Users/brent/OneDrive/Desktop/dealer_contact_system/scripts/setup_domain_discovery_egress.ps1)
+
+## Dedicated Discovery Egress
+
+The separate discovery worker can be attached to its own serverless VPC connector and Cloud NAT path so it uses a dedicated outbound IP without changing the enrichment worker.
+
+Current discovery egress components:
+
+- VPC connector: `dealer-discovery-conn`
+- Router: `dealer-domain-discovery-router`
+- NAT: `dealer-domain-discovery-nat`
+- Static egress IP: `34.45.226.9`
+
+To recreate or update that path:
+
+```powershell
+.\scripts\setup_domain_discovery_egress.ps1
+.\scripts\deploy_domain_discovery_job.ps1 -ServiceAccountEmail "dealer-contact-worker@dealer-contacts-project.iam.gserviceaccount.com" -VpcConnector "dealer-discovery-conn" -VpcEgress "all-traffic"
+.\scripts\deploy_domain_discovery_scheduler.ps1 -InvokerServiceAccountEmail "dealer-contact-worker@dealer-contacts-project.iam.gserviceaccount.com"
+```
 
 ## Dashboard UI
 

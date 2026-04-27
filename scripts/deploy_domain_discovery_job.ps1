@@ -5,6 +5,8 @@ param(
     [string]$ImageName = "dealer-contact-system",
     [string]$JobName = "dealer-domain-discovery-worker",
     [string]$ServiceAccountEmail,
+    [string]$VpcConnector = "",
+    [string]$VpcEgress = "private-ranges-only",
     [int]$DomainDiscoveryBatchSize = 5,
     [int]$DomainDiscoveryQueryBatchSize = 40,
     [int]$DomainDiscoveryCooldownHours = 72,
@@ -67,7 +69,22 @@ Write-Host "Building container image..."
 cmd /c "gcloud builds submit --tag $imageUri --project=$ProjectId"
 
 Write-Host "Deploying Cloud Run discovery job..."
-cmd /c "gcloud run jobs deploy $JobName --image $imageUri --region $Region --project=$ProjectId --service-account $ServiceAccountEmail --env-vars-file $envFile --max-retries 0 --task-timeout ${TaskTimeoutSeconds}s --args run-domain-discovery-cycle,--seed"
+$deployArgs = @(
+    "run jobs deploy $JobName",
+    "--image $imageUri",
+    "--region $Region",
+    "--project=$ProjectId",
+    "--service-account $ServiceAccountEmail",
+    "--env-vars-file $envFile",
+    "--max-retries 0",
+    "--task-timeout ${TaskTimeoutSeconds}s",
+    "--args run-domain-discovery-cycle,--seed"
+)
+if ($VpcConnector) {
+    $deployArgs += "--vpc-connector $VpcConnector"
+    $deployArgs += "--vpc-egress $VpcEgress"
+}
+cmd /c ("gcloud " + ($deployArgs -join " "))
 
 Remove-Item -Path $envFile -ErrorAction SilentlyContinue
 
