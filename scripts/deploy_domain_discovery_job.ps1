@@ -10,6 +10,7 @@ param(
     [int]$DomainDiscoveryBatchSize = 5,
     [int]$DomainDiscoveryQueryBatchSize = 40,
     [int]$DomainDiscoveryCooldownHours = 72,
+    [int]$DomainDiscoveryUsSharePercent = 85,
     [bool]$DomainDiscoveryPromotionEnabled = $true,
     [int]$TaskTimeoutSeconds = 1800
 )
@@ -29,6 +30,7 @@ $envVars = @(
     "DOMAIN_DISCOVERY_BATCH_SIZE=$DomainDiscoveryBatchSize",
     "DOMAIN_DISCOVERY_QUERY_BATCH_SIZE=$DomainDiscoveryQueryBatchSize",
     "DOMAIN_DISCOVERY_COOLDOWN_HOURS=$DomainDiscoveryCooldownHours",
+    "DOMAIN_DISCOVERY_US_SHARE_PERCENT=$DomainDiscoveryUsSharePercent",
     "DOMAIN_DISCOVERY_PROMOTION_ENABLED=$($DomainDiscoveryPromotionEnabled.ToString().ToLower())"
 )
 

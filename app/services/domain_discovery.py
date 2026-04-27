@@ -74,6 +74,18 @@ OEM_HOST_HINTS = {
     "vw.com",
     "volkswagen.com",
 }
+PERSONAL_DOMAIN_ROOTS = {
+    "gmail",
+    "yahoo",
+    "hotmail",
+    "outlook",
+    "live",
+    "msn",
+    "aol",
+    "icloud",
+    "me",
+    "mac",
+}
 CANADA_PROVINCES = {
     "AB", "BC", "MB", "NB", "NL", "NS", "NT", "NU", "ON", "PE", "QC", "SK", "YT",
 }
@@ -421,51 +433,85 @@ class DomainDiscoveryService:
 
         source_query = f"""
         SELECT DISTINCT
-          inferred_brand AS brand_hint,
-          account_city AS city,
-          account_state AS state_or_province,
-          CASE
-            WHEN COALESCE(NULLIF(TRIM(ai_country), ''), NULLIF(TRIM(gbp_country), '')) = 'Canada'
-                 OR account_state IN ({", ".join(f"'{province}'" for province in sorted(CANADA_PROVINCES))})
-              THEN 'Canada'
-            ELSE 'United States'
-          END AS country,
-          CASE
-            WHEN COALESCE(NULLIF(TRIM(ai_country), ''), NULLIF(TRIM(gbp_country), '')) = 'Canada'
-                 OR account_state IN ({", ".join(f"'{province}'" for province in sorted(CANADA_PROVINCES))})
-              THEN 'Canada'
-            ELSE 'US'
-          END AS market
-        FROM `{self.settings.dealer_accounts_table_fqn}`
-        WHERE dealer_classification IN ('dealer', 'dealer_group')
-          AND inferred_brand IS NOT NULL
-          AND TRIM(inferred_brand) != ''
-          AND account_state IS NOT NULL
-          AND TRIM(account_state) != ''
-        ORDER BY brand_hint, state_or_province, city
-        LIMIT {max(self.settings.domain_discovery_query_batch_size * 4, 100)}
+          brand_hint,
+          seed_context_name,
+          seed_domain_hint,
+          city,
+          state_or_province,
+          country,
+          market
+        FROM (
+          SELECT
+            inferred_brand AS brand_hint,
+            COALESCE(NULLIF(TRIM(account_name), ''), account_key) AS seed_context_name,
+            account_key AS seed_domain_hint,
+            account_city AS city,
+            account_state AS state_or_province,
+            CASE
+              WHEN COALESCE(NULLIF(TRIM(ai_country), ''), NULLIF(TRIM(gbp_country), '')) = 'Canada'
+                   OR account_state IN ({", ".join(f"'{province}'" for province in sorted(CANADA_PROVINCES))})
+                THEN 'Canada'
+              ELSE 'United States'
+            END AS country,
+            CASE
+              WHEN COALESCE(NULLIF(TRIM(ai_country), ''), NULLIF(TRIM(gbp_country), '')) = 'Canada'
+                   OR account_state IN ({", ".join(f"'{province}'" for province in sorted(CANADA_PROVINCES))})
+                THEN 'Canada'
+              ELSE 'US'
+            END AS market
+          FROM `{self.settings.dealer_accounts_table_fqn}`
+          WHERE dealer_classification IN ('dealer', 'dealer_group')
+            AND inferred_brand IS NOT NULL
+            AND TRIM(inferred_brand) != ''
+            AND account_state IS NOT NULL
+            AND TRIM(account_state) != ''
+
+          UNION DISTINCT
+
+          SELECT
+            oem AS brand_hint,
+            dealer_name AS seed_context_name,
+            account_key AS seed_domain_hint,
+            city,
+            state AS state_or_province,
+            country,
+            market
+          FROM `{self.settings.prospect_leads_table_fqn}`
+          WHERE country = 'Canada'
+            AND oem IS NOT NULL
+            AND TRIM(oem) != ''
+        )
+        ORDER BY country, brand_hint, state_or_province, city
         """
         rows = self.repository.fetch_all(source_query)
-        tasks: list[DiscoverySeedTask] = []
+        us_tasks: list[DiscoverySeedTask] = []
+        canada_tasks: list[DiscoverySeedTask] = []
         seen: set[str] = set()
         expansions = ("dealer", "dealership", "motors")
         for row in rows:
             brand = str(row.get("brand_hint") or "").strip()
             if not brand:
                 continue
+            seed_context_name = self._build_seed_context_name(
+                str(row.get("seed_context_name") or "").strip() or None,
+                str(row.get("seed_domain_hint") or "").strip() or None,
+            )
             city = str(row.get("city") or "").strip() or None
             state = str(row.get("state_or_province") or "").strip() or None
             country = str(row.get("country") or "United States").strip() or "United States"
             market = str(row.get("market") or ("Canada" if country == "Canada" else "US")).strip()
-            location_parts = [part for part in [city, state, country] if part]
+            if city or state:
+                location_parts = [part for part in [city, state, country] if part]
+            else:
+                location_parts = [part for part in [seed_context_name, country] if part]
             for expansion in expansions:
                 search_term = " ".join([brand, expansion, *location_parts]).strip()
                 dedupe_key = self._normalize_key(search_term)
                 if not search_term or dedupe_key in seen:
                     continue
                 seen.add(dedupe_key)
-                priority = 100 if city and state else 80
-                tasks.append(
+                bucket = canada_tasks if country == "Canada" else us_tasks
+                bucket.append(
                     DiscoverySeedTask(
                         dedupe_key=dedupe_key,
                         search_term=search_term,
@@ -474,12 +520,106 @@ class DomainDiscoveryService:
                         country=country,
                         state_or_province=state,
                         city=city,
-                        priority=priority,
+                        priority=0,
                     )
                 )
-                if len(tasks) >= self.settings.domain_discovery_query_batch_size:
-                    return tasks
-        return tasks
+        return self._weighted_rotate_seed_tasks(us_tasks, canada_tasks)
+
+    def _weighted_rotate_seed_tasks(
+        self,
+        us_tasks: list[DiscoverySeedTask],
+        canada_tasks: list[DiscoverySeedTask],
+    ) -> list[DiscoverySeedTask]:
+        """Return discovery tasks in a rotated U.S./Canada order with weighted shares."""
+
+        final_limit = max(self.settings.domain_discovery_query_batch_size, 1)
+        us_share = min(max(self.settings.domain_discovery_us_share_percent, 0), 100) / 100.0
+        canada_share = 1.0 - us_share
+
+        if not canada_tasks:
+            return self._assign_rotated_priorities(us_tasks[:final_limit])
+        if not us_tasks:
+            return self._assign_rotated_priorities(canada_tasks[:final_limit])
+
+        canada_target = min(
+            len(canada_tasks),
+            max(1, int(round(final_limit * canada_share))),
+        )
+        us_target = min(len(us_tasks), final_limit - canada_target)
+        if us_target + canada_target < final_limit:
+            remaining = final_limit - (us_target + canada_target)
+            extra_us = min(len(us_tasks) - us_target, remaining)
+            us_target += extra_us
+            remaining -= extra_us
+            if remaining > 0:
+                canada_target += min(len(canada_tasks) - canada_target, remaining)
+
+        selected_us = us_tasks[:us_target]
+        selected_canada = canada_tasks[:canada_target]
+
+        rotated: list[DiscoverySeedTask] = []
+        us_index = 0
+        canada_index = 0
+        while len(rotated) < final_limit and (us_index < len(selected_us) or canada_index < len(selected_canada)):
+            if canada_index >= len(selected_canada):
+                rotated.append(selected_us[us_index])
+                us_index += 1
+                continue
+            if us_index >= len(selected_us):
+                rotated.append(selected_canada[canada_index])
+                canada_index += 1
+                continue
+
+            next_position = len(rotated) + 1
+            desired_canada_so_far = round(next_position * canada_share)
+            if canada_index < desired_canada_so_far:
+                rotated.append(selected_canada[canada_index])
+                canada_index += 1
+            else:
+                rotated.append(selected_us[us_index])
+                us_index += 1
+
+        return self._assign_rotated_priorities(rotated[:final_limit])
+
+    def _assign_rotated_priorities(self, tasks: list[DiscoverySeedTask]) -> list[DiscoverySeedTask]:
+        """Assign descending queue priority while preserving the rotated seed order."""
+
+        prioritized: list[DiscoverySeedTask] = []
+        sequence_priority = 10_000
+        for index, task in enumerate(tasks):
+            locality_bonus = 10 if task.city and task.state_or_province else 0
+            prioritized.append(
+                DiscoverySeedTask(
+                    dedupe_key=task.dedupe_key,
+                    search_term=task.search_term,
+                    brand_hint=task.brand_hint,
+                    market=task.market,
+                    country=task.country,
+                    state_or_province=task.state_or_province,
+                    city=task.city,
+                    priority=sequence_priority - (index * 10) + locality_bonus,
+                )
+            )
+        return prioritized
+
+    def _build_seed_context_name(self, raw_name: str | None, domain_hint: str | None) -> str | None:
+        """Build a safer fallback name for discovery searches when city/state are missing."""
+
+        if raw_name:
+            compact_name = raw_name.strip()
+            if compact_name and "@" not in compact_name and not compact_name.lower().endswith((".com", ".ca", ".net", ".org")):
+                return compact_name
+
+        domain = self._normalize_domain(domain_hint)
+        if not domain:
+            return None
+        root_label = domain.split(".", 1)[0]
+        if root_label in PERSONAL_DOMAIN_ROOTS:
+            return None
+        cleaned = re.sub(r"[^a-z0-9]+", " ", root_label.lower()).strip()
+        if not cleaned:
+            return None
+        return cleaned
 
     def _merge_seed_tasks(self, tasks: list[DiscoverySeedTask]) -> None:
         """Insert missing queue tasks or reopen cooled-down ones."""
@@ -504,6 +644,16 @@ class DomainDiscoveryService:
           {source_sql}
         ) AS source
         ON target.dedupe_key = source.dedupe_key
+        WHEN MATCHED AND target.status IN ('pending', 'retry') THEN
+          UPDATE SET
+            search_term = source.search_term,
+            brand_hint = source.brand_hint,
+            market = source.market,
+            country = source.country,
+            state_or_province = source.state_or_province,
+            city = source.city,
+            priority = source.priority,
+            updated_at = CURRENT_TIMESTAMP()
         WHEN MATCHED AND target.status IN ('completed', 'failed') AND (target.next_attempt_at IS NULL OR target.next_attempt_at <= CURRENT_TIMESTAMP()) THEN
           UPDATE SET
             status = 'pending',
