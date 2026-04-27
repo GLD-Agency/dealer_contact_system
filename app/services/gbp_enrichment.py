@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import base64
 from datetime import datetime
 import json
 import re
@@ -42,6 +43,38 @@ US_STATE_CODES = {
     "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN",
     "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY", "DC",
 }
+OEM_DOMAIN_TOKENS = (
+    "acura",
+    "audi",
+    "bmw",
+    "buick",
+    "cadillac",
+    "chevrolet",
+    "chevy",
+    "chrysler",
+    "dodge",
+    "fiat",
+    "ford",
+    "gmc",
+    "honda",
+    "hyundai",
+    "infiniti",
+    "jeep",
+    "kia",
+    "lexus",
+    "lincoln",
+    "mazda",
+    "mercedes",
+    "mini",
+    "mitsubishi",
+    "nissan",
+    "porsche",
+    "ram",
+    "subaru",
+    "toyota",
+    "volkswagen",
+    "vw",
+)
 
 PHONE_REGEX = re.compile(r"(?:\+?1[\s.\-]?)?(?:\(?\d{3}\)?[\s.\-]?)\d{3}[\s.\-]?\d{4}")
 CA_POSTAL_REGEX = re.compile(r"\b([A-Z]\d[A-Z]\s?\d[A-Z]\d)\b", re.IGNORECASE)
@@ -60,6 +93,7 @@ class GbpAccountCandidate:
     dealer_account_id: str
     account_key: str
     account_name: str | None
+    inferred_brand: str | None
     website_url: str | None
     account_city: str | None
     account_state: str | None
@@ -93,6 +127,7 @@ class GbpEnrichmentService:
     """Enrich dealer accounts with fallback GBP-style phone and address signals."""
 
     CONNECTION_RECORD_ID = "gbp_enrichment_lane"
+    BING_SEARCH_ENDPOINT = "https://www.bing.com/search"
 
     def __init__(self, repository: BigQueryRepository, settings: Settings) -> None:
         self.repository = repository
@@ -175,6 +210,7 @@ class GbpEnrichmentService:
           dealer_account_id,
           account_key,
           account_name,
+          inferred_brand,
           website_url,
           account_city,
           account_state,
@@ -202,6 +238,13 @@ class GbpEnrichmentService:
             WHEN best_phone IS NULL OR TRIM(best_phone) = '' THEN 1
             ELSE 2
           END ASC,
+          (
+            CASE WHEN account_name IS NOT NULL AND TRIM(account_name) != '' THEN 1 ELSE 0 END
+            + CASE WHEN inferred_brand IS NOT NULL AND TRIM(inferred_brand) != '' THEN 1 ELSE 0 END
+            + CASE WHEN website_url IS NOT NULL AND TRIM(website_url) != '' THEN 1 ELSE 0 END
+            + CASE WHEN account_city IS NOT NULL AND TRIM(account_city) != '' THEN 1 ELSE 0 END
+            + CASE WHEN account_state IS NOT NULL AND TRIM(account_state) != '' THEN 1 ELSE 0 END
+          ) DESC,
           IFNULL(last_verified_at, TIMESTAMP('1970-01-01')) ASC,
           account_key ASC
         LIMIT {row_limit}
@@ -212,6 +255,7 @@ class GbpEnrichmentService:
                 dealer_account_id=row["dealer_account_id"],
                 account_key=row["account_key"],
                 account_name=row.get("account_name"),
+                inferred_brand=row.get("inferred_brand"),
                 website_url=row.get("website_url"),
                 account_city=row.get("account_city"),
                 account_state=row.get("account_state"),
@@ -278,15 +322,30 @@ class GbpEnrichmentService:
     def _search(self, account: GbpAccountCandidate) -> list[SearchResult]:
         """Search for business listing signals using a public HTML search endpoint."""
 
-        query_parts = [
-            account.account_name or account.account_key,
-            account.account_city or "",
-            account.account_state or "",
-            "phone address",
-        ]
-        query = " ".join(part for part in query_parts if part).strip()
-        if not query:
-            return []
+        results: list[SearchResult] = []
+        seen_urls: set[str] = set()
+        for query in self._build_search_queries(account):
+            query_results = self._search_query_variants(account, query)
+            for result in query_results:
+                if not result.url or result.url in seen_urls:
+                    continue
+                seen_urls.add(result.url)
+                results.append(result)
+            if len(results) >= 12:
+                break
+        return results
+
+    def _search_query_variants(self, account: GbpAccountCandidate, query: str) -> list[SearchResult]:
+        """Search one query against preferred and fallback public search endpoints."""
+
+        query_results = self._search_duckduckgo(query)
+        if query_results:
+            return query_results
+        logger.info("GBP search falling back to Bing | account=%s | query=%s", account.account_key, query)
+        return self._search_bing(query)
+
+    def _search_duckduckgo(self, query: str) -> list[SearchResult]:
+        """Search the configured DuckDuckGo HTML endpoint."""
 
         try:
             response = self.session.get(
@@ -295,8 +354,7 @@ class GbpEnrichmentService:
                 proxies=NO_PROXY,
             )
             response.raise_for_status()
-        except requests.RequestException as exc:
-            logger.warning("GBP search failed | account=%s | error=%s", account.account_key, exc)
+        except requests.RequestException:
             return []
 
         soup = BeautifulSoup(response.text, "html.parser")
@@ -306,15 +364,112 @@ class GbpEnrichmentService:
             if not link:
                 continue
             snippet = result.select_one(".result__snippet")
-            href = str(link.get("href") or "")
+            href = self._normalize_result_url(str(link.get("href") or ""))
+            if not href:
+                continue
             results.append(
                 SearchResult(
                     title=link.get_text(" ", strip=True),
                     snippet=snippet.get_text(" ", strip=True) if snippet else "",
-                    url=self._normalize_result_url(href),
+                    url=href,
                 )
             )
         return results
+
+    def _search_bing(self, query: str) -> list[SearchResult]:
+        """Search Bing HTML as a public fallback when DuckDuckGo is blocked or empty."""
+
+        try:
+            response = requests.get(
+                f"{self.BING_SEARCH_ENDPOINT}?q={quote_plus(query)}",
+                timeout=self.settings.request_timeout_seconds,
+                headers={"User-Agent": "Mozilla/5.0"},
+                proxies=NO_PROXY,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            logger.warning("GBP Bing fallback failed | query=%s | error=%s", query, exc)
+            return []
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        results: list[SearchResult] = []
+        for result in soup.select("li.b_algo"):
+            link = result.select_one("h2 a")
+            if not link:
+                continue
+            snippet = result.select_one(".b_caption p")
+            href = self._normalize_result_url(str(link.get("href") or ""))
+            if not href:
+                continue
+            results.append(
+                SearchResult(
+                    title=link.get_text(" ", strip=True),
+                    snippet=snippet.get_text(" ", strip=True) if snippet else "",
+                    url=href,
+                )
+            )
+        return results
+
+    def _build_search_queries(self, account: GbpAccountCandidate) -> list[str]:
+        """Build a few stronger search variants for thin dealer account records."""
+
+        domain_phrase = self._domain_phrase(account.account_key)
+        raw_domain_root = self._raw_domain_root(account.account_key)
+        name_phrase = self._clean_search_name(account.account_name)
+        brand_phrase = (account.inferred_brand or "").strip()
+        city = self._clean_search_location_part(account.account_city)
+        state = self._clean_search_location_part(account.account_state)
+
+        location = " ".join(part for part in [city, state] if part).strip()
+        anchor = name_phrase or " ".join(part for part in [brand_phrase, domain_phrase] if part).strip() or domain_phrase or account.account_key
+
+        candidates = [
+            " ".join(part for part in [f'\"{anchor}\"' if anchor else "", location, "dealership phone address"] if part).strip(),
+            " ".join(part for part in [f'\"{anchor}\"' if anchor else "", location, "dealer phone address"] if part).strip(),
+            " ".join(part for part in [brand_phrase, domain_phrase, location, "dealership contact"] if part).strip(),
+            " ".join(part for part in [domain_phrase, location, "dealer address phone"] if part).strip(),
+            " ".join(part for part in [raw_domain_root, location, "dealer phone address"] if part).strip(),
+            " ".join(part for part in [raw_domain_root, "contact"] if part).strip(),
+            " ".join(part for part in [f"{raw_domain_root}.com", "contact"] if part).strip(),
+        ]
+
+        queries: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            normalized = re.sub(r"\s+", " ", candidate).strip()
+            if not normalized:
+                continue
+            key = normalized.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            queries.append(normalized)
+        return queries[:6]
+
+    def _clean_search_name(self, value: str | None) -> str:
+        """Trim noisy marketing copy from account names before using them in search."""
+
+        if not value:
+            return ""
+        cleaned = str(value).strip()
+        for separator in ("|", " - ", " — "):
+            if separator in cleaned:
+                cleaned = cleaned.split(separator, 1)[0].strip()
+        cleaned = re.sub(r"\s+", " ", cleaned)
+        return cleaned
+
+    def _clean_search_location_part(self, value: str | None) -> str:
+        """Drop obviously noisy pseudo-location text from search inputs."""
+
+        if not value:
+            return ""
+        cleaned = str(value).strip()
+        lowered = cleaned.lower()
+        if any(token in lowered for token in ("dealership", "promise", "visit ", "sale in ", "serving ")):
+            return ""
+        if len(cleaned.split()) > 4:
+            return ""
+        return cleaned
 
     def _extract_candidate(self, account: GbpAccountCandidate, result: SearchResult) -> dict[str, Any] | None:
         """Extract phone/address fields from one search result and its page."""
@@ -337,6 +492,8 @@ class GbpEnrichmentService:
         combined_text = " ".join(
             part for part in [result.title, result.snippet, page_text] if part
         )
+        if not self._text_matches_account(account, f"{combined_text} {result.url}"):
+            return None
 
         phone = None
         address: dict[str, str] | None = None
@@ -571,11 +728,44 @@ class GbpEnrichmentService:
         lowered = text.lower()
         if account.account_name and account.account_name.lower() in lowered:
             return True
+        if account.inferred_brand and account.inferred_brand.lower() in lowered:
+            return True
         if account.account_city and account.account_city.lower() in lowered:
             return True
-        if account.account_key and account.account_key.split(".")[0].replace("-", " ") in lowered:
+        domain_phrase = self._domain_phrase(account.account_key)
+        if domain_phrase and domain_phrase in lowered:
             return True
         return False
+
+    def _domain_phrase(self, value: str | None) -> str:
+        """Convert a domain/account key into a search-friendly phrase."""
+
+        if not value:
+            return ""
+        raw = str(value).strip().lower()
+        raw = re.sub(r"^https?://", "", raw)
+        raw = raw.split("/", 1)[0]
+        raw = raw.removeprefix("www.")
+        root = raw.split(".", 1)[0]
+        for token in sorted(OEM_DOMAIN_TOKENS, key=len, reverse=True):
+            if root.endswith(token) and root != token:
+                root = f"{root[:-len(token)]} {token}"
+                break
+        phrase = re.sub(r"[-_]+", " ", root)
+        phrase = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", phrase)
+        phrase = re.sub(r"\s+", " ", phrase).strip()
+        return phrase
+
+    def _raw_domain_root(self, value: str | None) -> str:
+        """Return the unsplit root label from an account key/domain."""
+
+        if not value:
+            return ""
+        raw = str(value).strip().lower()
+        raw = re.sub(r"^https?://", "", raw)
+        raw = raw.split("/", 1)[0]
+        raw = raw.removeprefix("www.")
+        return raw.split(".", 1)[0]
 
     def _normalize_result_url(self, url: str) -> str:
         """Resolve DuckDuckGo redirect URLs into target URLs."""
@@ -585,7 +775,27 @@ class GbpEnrichmentService:
         uddg = query_params.get("uddg")
         if uddg:
             return uddg[0]
+        if parsed.netloc.endswith("bing.com"):
+            encoded = query_params.get("u", [""])[0]
+            decoded = self._decode_bing_target(encoded)
+            if decoded:
+                return decoded
         return url
+
+    def _decode_bing_target(self, value: str) -> str | None:
+        """Decode Bing redirect targets when present."""
+
+        if not value:
+            return None
+        candidate = value
+        if candidate.startswith("a1"):
+            candidate = candidate[2:]
+        padding = "=" * (-len(candidate) % 4)
+        try:
+            decoded = base64.b64decode(candidate + padding).decode("utf-8", errors="ignore")
+        except Exception:
+            return None
+        return decoded if decoded.startswith("http") else None
 
     def _apply_updates(self, updates: list[dict[str, Any]]) -> None:
         """Write GBP enrichment updates to dealer accounts."""
