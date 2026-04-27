@@ -22,12 +22,16 @@
             <strong>{{ data.table_name }}</strong>
           </div>
           <div class="meta-card">
-            <span class="meta-label">Visible Dealer Rows</span>
+            <span class="meta-label">Actionable Dealer Rows</span>
             <strong>{{ "{:,}".format(data.total_rows or 0) }}</strong>
           </div>
           <div class="meta-card">
             <span class="meta-label">Hidden Rejected Rows</span>
             <strong>{{ "{:,}".format(data.hidden_rejected_rows or 0) }}</strong>
+          </div>
+          <div class="meta-card">
+            <span class="meta-label">Hidden Duplicate Rows</span>
+            <strong>{{ "{:,}".format(data.hidden_duplicate_rows or 0) }}</strong>
           </div>
           <div class="meta-card">
             <span class="meta-label">Last Discovery Run</span>
@@ -44,7 +48,7 @@
         <div class="records-toolbar">
           <div class="records-toolbar-copy">
             <span class="stat-label">Page {{ data.page }} of {{ data.total_pages }}</span>
-            <p>Showing {{ "{:,}".format(data.page_size or 0) }} dealer-facing rows per page from the discovery candidates table.</p>
+            <p>Showing {{ "{:,}".format(data.page_size or 0) }} actionable dealer rows per page from the discovery candidates table.</p>
             <p>
               Discovery ran {{ "{:,}".format(data.runs_last_24h or 0) }} time(s) in the last 24 hours and
               {{ "{:,}".format(data.productive_runs_last_24h or 0) }} run(s) wrote at least one new candidate row.
@@ -84,7 +88,7 @@
               {% endfor %}
               {% else %}
               <tr>
-                <td colspan="{{ data.columns|length }}">No non-rejected discovery dealer candidates are available right now.</td>
+                <td colspan="{{ data.columns|length }}">No actionable new dealer discovery candidates are available right now.</td>
               </tr>
               {% endif %}
             </tbody>

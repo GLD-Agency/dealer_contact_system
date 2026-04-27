@@ -120,7 +120,7 @@ class DashboardService:
         count_query = f"""
         SELECT COUNT(*) AS total_rows
         FROM `{self.settings.discovered_domain_candidates_table_fqn}`
-        WHERE NOT STARTS_WITH(COALESCE(promotion_status, ''), 'rejected')
+        WHERE COALESCE(promotion_status, '') IN ('new', 'promoted_to_main_pipeline')
         """
         total_rows = int(self.repository.fetch_one(count_query).get("total_rows", 0))
 
@@ -131,6 +131,15 @@ class DashboardService:
         """
         hidden_rejected_rows = int(
             self.repository.fetch_one(hidden_rejected_query).get("hidden_rejected_rows", 0)
+        )
+
+        hidden_duplicate_query = f"""
+        SELECT COUNT(*) AS hidden_duplicate_rows
+        FROM `{self.settings.discovered_domain_candidates_table_fqn}`
+        WHERE COALESCE(promotion_status, '') = 'duplicate_existing'
+        """
+        hidden_duplicate_rows = int(
+            self.repository.fetch_one(hidden_duplicate_query).get("hidden_duplicate_rows", 0)
         )
 
         data_query = f"""
@@ -194,7 +203,7 @@ class DashboardService:
             OR REGEXP_REPLACE(LOWER(COALESCE(matched.website_url, '')), r'^https?://(www\\.)?', '') = candidate.candidate_domain
           LEFT JOIN `{self.settings.dealer_accounts_table_fqn}` AS promoted
             ON promoted.account_key = candidate.promoted_account_key
-          WHERE NOT STARTS_WITH(COALESCE(candidate.promotion_status, ''), 'rejected')
+          WHERE COALESCE(candidate.promotion_status, '') IN ('new', 'promoted_to_main_pipeline')
         )
         SELECT
           candidate_id,
@@ -284,6 +293,7 @@ class DashboardService:
             "page_size": safe_page_size,
             "total_rows": total_rows,
             "hidden_rejected_rows": hidden_rejected_rows,
+            "hidden_duplicate_rows": hidden_duplicate_rows,
             "total_pages": total_pages,
             "has_previous": safe_page > 1,
             "has_next": safe_page < total_pages,
