@@ -3,7 +3,7 @@ param(
     [string]$Region = "us-central1",
     [string]$JobName = "dealer-domain-discovery-worker",
     [string]$SchedulerName = "dealer-domain-discovery-schedule",
-    [string]$Schedule = "0 * * * *",
+    [string]$Schedule = "*/30 * * * *",
     [string]$InvokerServiceAccountEmail
 )
 

@@ -280,7 +280,7 @@ def get_settings() -> Settings:
         domain_discovery_query_batch_size=int(os.getenv("DOMAIN_DISCOVERY_QUERY_BATCH_SIZE", "40")),
         domain_discovery_cooldown_hours=int(os.getenv("DOMAIN_DISCOVERY_COOLDOWN_HOURS", "72")),
         domain_discovery_promotion_enabled=os.getenv("DOMAIN_DISCOVERY_PROMOTION_ENABLED", "true").lower() == "true",
-        domain_discovery_schedule_hint=os.getenv("DOMAIN_DISCOVERY_SCHEDULE_HINT", "*/60 * * * *"),
+        domain_discovery_schedule_hint=os.getenv("DOMAIN_DISCOVERY_SCHEDULE_HINT", "*/30 * * * *"),
         domain_discovery_us_share_percent=int(os.getenv("DOMAIN_DISCOVERY_US_SHARE_PERCENT", "85")),
         domain_discovery_search_endpoint=os.getenv(
             "DOMAIN_DISCOVERY_SEARCH_ENDPOINT",
