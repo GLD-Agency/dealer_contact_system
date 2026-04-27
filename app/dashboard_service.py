@@ -266,6 +266,10 @@ class DashboardService:
           (SELECT COUNTIF(ai_phone IS NOT NULL AND TRIM(ai_phone) != '') FROM `{self.settings.dealer_accounts_table_fqn}`) AS accounts_with_ai_phone,
           (SELECT COUNTIF(gbp_address_line IS NOT NULL AND TRIM(gbp_address_line) != '') FROM `{self.settings.dealer_accounts_table_fqn}`) AS accounts_with_gbp_address,
           (SELECT COUNTIF(ai_address_line IS NOT NULL AND TRIM(ai_address_line) != '') FROM `{self.settings.dealer_accounts_table_fqn}`) AS accounts_with_ai_address,
+          (SELECT COUNTIF(gbp_last_verified_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 24 HOUR)) FROM `{self.settings.dealer_accounts_table_fqn}`) AS gbp_verified_last_24h,
+          (SELECT COUNTIF(ai_last_verified_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 24 HOUR)) FROM `{self.settings.dealer_accounts_table_fqn}`) AS ai_verified_last_24h,
+          (SELECT MAX(gbp_last_verified_at) FROM `{self.settings.dealer_accounts_table_fqn}`) AS last_gbp_verified_at,
+          (SELECT MAX(ai_last_verified_at) FROM `{self.settings.dealer_accounts_table_fqn}`) AS last_ai_verified_at,
           (SELECT COUNTIF(best_phone_source = 'gbp' AND best_phone IS NOT NULL AND TRIM(best_phone) != '') FROM `{self.settings.dealer_accounts_table_fqn}`) AS accounts_with_best_phone_from_gbp,
           (SELECT COUNTIF(best_phone_source = 'ai' AND best_phone IS NOT NULL AND TRIM(best_phone) != '') FROM `{self.settings.dealer_accounts_table_fqn}`) AS accounts_with_best_phone_from_ai,
           (SELECT COUNTIF(activation_status = 'activation_ready') FROM `{self.settings.dealer_accounts_table_fqn}`) AS activation_ready_accounts,
@@ -282,8 +286,9 @@ class DashboardService:
           (SELECT COUNTIF(NOT prospecting_allowed_flag) FROM `{self.settings.prospect_leads_table_fqn}`) AS dim_suppressed_leads,
           (SELECT COUNTIF(source_type = 'website_contact_extraction') FROM `{self.settings.prospect_contacts_table_fqn}`) AS website_extracted_contacts,
           (SELECT COUNT(*) FROM `{self.settings.pipeline_runs_table_fqn}`) AS pipeline_runs,
-          (SELECT COUNTIF(task_type = 'ai_account_facts' AND status IN ('pending', 'retry')) FROM `{self.settings.account_work_queue_table_fqn}`) AS queued_ai_account_facts,
-          (SELECT COUNTIF(task_type = 'validate' AND status IN ('pending', 'retry')) FROM `{self.settings.account_work_queue_table_fqn}`) AS queued_validate,
+            (SELECT COUNTIF(task_type = 'ai_account_facts' AND status IN ('pending', 'retry')) FROM `{self.settings.account_work_queue_table_fqn}`) AS queued_ai_account_facts,
+            (SELECT COUNTIF(task_type = 'enrich_gbp' AND status IN ('pending', 'retry')) FROM `{self.settings.account_work_queue_table_fqn}`) AS queued_gbp_enrich,
+            (SELECT COUNTIF(task_type = 'validate' AND status IN ('pending', 'retry')) FROM `{self.settings.account_work_queue_table_fqn}`) AS queued_validate,
           (SELECT COUNTIF(task_type = 'enrich' AND status IN ('pending', 'retry')) FROM `{self.settings.account_work_queue_table_fqn}`) AS queued_enrich,
           (SELECT COUNTIF(task_type = 'extract_contacts' AND status IN ('pending', 'retry')) FROM `{self.settings.account_work_queue_table_fqn}`) AS queued_extract,
           (SELECT COUNTIF(task_type = 'retry_blocked' AND status IN ('pending', 'retry')) FROM `{self.settings.account_work_queue_table_fqn}`) AS queued_retry_blocked,
@@ -669,21 +674,46 @@ class DashboardService:
                 name="GBP Enrichment",
                 sync_row=system_statuses.get("gbp_enrichment"),
                 fallback_status="healthy" if self.settings.gbp_enrichment_enabled else "warning",
-                fallback_detail=(
-                    f"{int(overview.get('accounts_with_gbp_phone', 0)):,} accounts have GBP phone coverage and "
-                    f"{int(overview.get('accounts_with_gbp_address', 0)):,} have GBP address coverage."
-                ),
+                fallback_detail=self._build_gbp_connection_detail(overview),
             ),
             self._system_status_row(
                 name="AI Retrieval",
                 sync_row=system_statuses.get("ai_retrieval"),
                 fallback_status="healthy" if self.settings.ai_retrieval_enabled and ai_configured else "warning",
-                fallback_detail=(
-                    f"{int(overview.get('accounts_with_ai_phone', 0)):,} accounts have AI phone coverage and "
-                    f"{int(overview.get('accounts_with_ai_address', 0)):,} have AI address coverage."
-                ),
+                fallback_detail=self._build_ai_connection_detail(overview),
             ),
         ]
+
+    def _build_gbp_connection_detail(self, overview: dict[str, Any]) -> str:
+        """Describe GBP lane coverage and recent verification activity."""
+
+        return (
+            f"{int(overview.get('accounts_with_gbp_phone', 0)):,} accounts have GBP phone coverage, "
+            f"{int(overview.get('accounts_with_gbp_address', 0)):,} have GBP address coverage, "
+            f"{int(overview.get('gbp_verified_last_24h', 0)):,} were verified in the last 24 hours, "
+            f"and {int(overview.get('queued_gbp_enrich', 0)):,} are still queued. "
+            f"Last GBP verification: {self._format_timestamp(overview.get('last_gbp_verified_at'))}."
+        )
+
+    def _build_ai_connection_detail(self, overview: dict[str, Any]) -> str:
+        """Describe AI lane coverage and recent verification activity."""
+
+        return (
+            f"{int(overview.get('accounts_with_ai_phone', 0)):,} accounts have AI phone coverage, "
+            f"{int(overview.get('accounts_with_ai_address', 0)):,} have AI address coverage, "
+            f"{int(overview.get('ai_verified_last_24h', 0)):,} were verified in the last 24 hours, "
+            f"and {int(overview.get('queued_ai_account_facts', 0)):,} are still queued. "
+            f"Last AI verification: {self._format_timestamp(overview.get('last_ai_verified_at'))}."
+        )
+
+    def _format_timestamp(self, value: Any) -> str:
+        """Format a BigQuery timestamp into a compact dashboard string."""
+
+        if not value:
+            return "-"
+        if isinstance(value, datetime):
+            return value.strftime("%Y-%m-%d %I:%M %p UTC")
+        return str(value)
 
     def _get_integration_connections(self) -> list[DashboardConnectionStatus]:
         """Return status rows for downstream platform integrations."""
@@ -832,6 +862,8 @@ class DashboardService:
         detail = f"Latest status: {sync_status}"
         if last_synced_at:
             detail += f" at {last_synced_at}"
+        if fallback_detail:
+            detail += f". {fallback_detail}"
         if sync_status in {"synced", "success", "completed", "configured"}:
             status = "healthy"
         elif sync_status in {"failed", "error"}:
