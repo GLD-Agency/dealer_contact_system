@@ -18,13 +18,14 @@ Phase 2 foundation for a dealer contact pipeline that uses BigQuery as the sourc
 - A one-page dashboard UI for status, health, brand mix, queue status, and recent runs
 - Automatic dashboard snapshots so the UI can show before/after deltas and trend history
 - A materialized `prospect_leads` table for downstream activation and exports
+- A separate domain discovery subsystem with its own queue, run log, and candidate table
 - A client DIM integration scaffold for suppression and ownership mapping
 - Managed-fetch escalation tracking for persistent blocked Dealer Inspire / Cloudflare sites
 - A provider-neutral AI retrieval lane with Gemini-first / OpenAI-second account-facts support
 - CLI commands for setup, normalize, and report
 - Helper scripts for connection checks and operational entry points
 
-This version includes Campaign Monitor sync, prospect lead materialization, and a fallback GBP enrichment lane for phone and address recovery. Meta, Google Ads, and live managed anti-bot provider execution are still scaffolded rather than fully activated.
+This version includes Campaign Monitor sync, prospect lead materialization, a fallback GBP enrichment lane for phone and address recovery, and a separate discovery worker that searches for new dealer domains without sharing the enrichment queue. Meta, Google Ads, and live managed anti-bot provider execution are still scaffolded rather than fully activated.
 
 ## Current Data Flow
 
@@ -39,6 +40,7 @@ This version includes Campaign Monitor sync, prospect lead materialization, and 
 9. Retry blocked dealer websites with a browser-backed fetch lane when basic HTTP fails
 10. Use queue-backed workers to claim small account batches and checkpoint progress
 11. Leave `sync_targets` ready for later downstream sync work
+12. Run a separate discovery worker that searches for new dealer domains and promotes only lightweight account seeds into the main pipeline
 
 Important guardrails:
 
@@ -133,6 +135,9 @@ gcloud auth application-default login
 - `SYNC_TARGETS_TABLE`: Placeholder downstream sync table
 - `ACCOUNT_WORK_QUEUE_TABLE`: BigQuery work queue table for brute-force workers
 - `PIPELINE_RUNS_TABLE`: BigQuery run log for worker execution
+- `DOMAIN_DISCOVERY_QUEUE_TABLE`: Separate discovery-only queue table for brand+geo search tasks
+- `DOMAIN_DISCOVERY_RUNS_TABLE`: Separate run log for the discovery worker
+- `DISCOVERED_DOMAIN_CANDIDATES_TABLE`: Candidate-domain table written by the discovery worker before promotion
 - `DASHBOARD_SNAPSHOTS_TABLE`: BigQuery snapshot table for dashboard trend history
 - `EXTERNAL_SEED_CONTACTS_TABLE`: Landing table for one-time imported CSV seeds
 - `PROSPECT_LEADS_TABLE`: Materialized downstream prospect database table
@@ -149,6 +154,13 @@ gcloud auth application-default login
 - `RETRY_BLOCKED_WORKER_BATCH_SIZE`: Batch size for one queue-cycle blocked-site retry step
 - `CAMPAIGN_MONITOR_SYNC_BATCH_SIZE`: Subscriber batch size for one Campaign Monitor sync step
 - `CAMPAIGN_MONITOR_SYNC_ENABLED`: Whether the queue cycle should push subscribers into Campaign Monitor
+- `DOMAIN_DISCOVERY_ENABLED`: Whether the separate discovery worker should run
+- `DOMAIN_DISCOVERY_BATCH_SIZE`: Number of discovery search tasks to process per run
+- `DOMAIN_DISCOVERY_QUERY_BATCH_SIZE`: Number of brand+geo discovery tasks to seed at once
+- `DOMAIN_DISCOVERY_COOLDOWN_HOURS`: Cooldown before the same discovery search term is retried
+- `DOMAIN_DISCOVERY_PROMOTION_ENABLED`: Whether discovery should promote truly new candidates into `dealer_accounts`
+- `DOMAIN_DISCOVERY_SCHEDULE_HINT`: Human-readable schedule hint for the discovery worker
+- `DOMAIN_DISCOVERY_SEARCH_ENDPOINT`: Search HTML endpoint used by the discovery worker
 - `GBP_ENRICHMENT_ENABLED`: Whether the fallback GBP enrichment lane should run
 - `GBP_PROVIDER`: Label for the search/provider fallback used for GBP-style enrichment
 - `GBP_SEARCH_ENDPOINT`: Search HTML endpoint used by the fallback GBP lane
@@ -208,6 +220,15 @@ python -m app run-worker --task-type extract_contacts --batch-size 25
 python -m app run-worker --task-type retry_blocked --batch-size 10
 python -m app run-queue-cycle --seed --dry-run
 python -m app run-queue-cycle --seed
+python -m app seed-domain-discovery --dry-run
+python -m app seed-domain-discovery
+python -m app run-domain-discovery-worker --dry-run --batch-size 3
+python -m app run-domain-discovery-worker --batch-size 3
+python -m app promote-discovered-domains --dry-run --limit 10
+python -m app promote-discovered-domains --limit 10
+python -m app run-domain-discovery-cycle --seed --dry-run
+python -m app run-domain-discovery-cycle --seed
+python -m app report-domain-discovery
 python -m app capture-dashboard-snapshot
 python -m app refresh-gbp-enrichment --dry-run --limit 25
 python -m app refresh-gbp-enrichment --limit 25
@@ -254,6 +275,15 @@ python main.py run-worker --task-type extract_contacts --batch-size 25
 python main.py run-worker --task-type retry_blocked --batch-size 10
 python main.py run-queue-cycle --seed --dry-run
 python main.py run-queue-cycle --seed
+python main.py seed-domain-discovery --dry-run
+python main.py seed-domain-discovery
+python main.py run-domain-discovery-worker --dry-run --batch-size 3
+python main.py run-domain-discovery-worker --batch-size 3
+python main.py promote-discovered-domains --dry-run --limit 10
+python main.py promote-discovered-domains --limit 10
+python main.py run-domain-discovery-cycle --seed --dry-run
+python main.py run-domain-discovery-cycle --seed
+python main.py report-domain-discovery
 python main.py capture-dashboard-snapshot
 python main.py refresh-gbp-enrichment --dry-run --limit 25
 python main.py refresh-gbp-enrichment --limit 25
@@ -472,6 +502,8 @@ Included deployment helpers:
 - [scripts/deploy_cloud_run_job.ps1](/C:/Users/brent/OneDrive/Desktop/dealer_contact_system/scripts/deploy_cloud_run_job.ps1)
 - [scripts/deploy_cloud_scheduler_job.ps1](/C:/Users/brent/OneDrive/Desktop/dealer_contact_system/scripts/deploy_cloud_scheduler_job.ps1)
 - [scripts/deploy_dashboard_service.ps1](/C:/Users/brent/OneDrive/Desktop/dealer_contact_system/scripts/deploy_dashboard_service.ps1)
+- [scripts/deploy_domain_discovery_job.ps1](/C:/Users/brent/OneDrive/Desktop/dealer_contact_system/scripts/deploy_domain_discovery_job.ps1)
+- [scripts/deploy_domain_discovery_scheduler.ps1](/C:/Users/brent/OneDrive/Desktop/dealer_contact_system/scripts/deploy_domain_discovery_scheduler.ps1)
 
 ## Dashboard UI
 

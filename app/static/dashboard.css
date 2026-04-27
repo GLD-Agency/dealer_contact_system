@@ -308,6 +308,16 @@ h1 {
   color: rgba(29, 43, 44, 0.72);
 }
 
+.empty-state {
+  padding: 14px 0;
+  color: rgba(29, 43, 44, 0.82);
+}
+
+.empty-state p {
+  margin: 6px 0 0;
+  color: rgba(29, 43, 44, 0.72);
+}
+
 .pill {
   display: inline-flex;
   align-items: center;

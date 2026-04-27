@@ -49,6 +49,16 @@
               View Records
             </a>
           </article>
+          <article class="table-link-card">
+            <div>
+              <span class="stat-label">Discovery Candidates</span>
+              <strong class="table-link-name">{{ data.project_id }}.{{ data.dataset }}.discovered_domain_candidates</strong>
+              <p>Open the separate read-only discovery table so your team can review newly found domains before or after promotion.</p>
+            </div>
+            <a class="table-link-button" href="{{ url_for('discovery_candidates') }}">
+              View Discovery
+            </a>
+          </article>
         </div>
       </section>
 
@@ -267,7 +277,87 @@
               <span>Queued AI Account Facts</span>
               <strong>{{ "{:,}".format(data.overview.queued_ai_account_facts or 0) }}</strong>
             </div>
+            <div class="metric-row">
+              <span>Queued Discovery Tasks</span>
+              <strong>{{ "{:,}".format(data.overview.queued_discovery_tasks or 0) }}</strong>
+            </div>
+            <div class="metric-row">
+              <span>Discovery Candidates</span>
+              <strong>{{ "{:,}".format(data.overview.discovery_candidates or 0) }}</strong>
+            </div>
           </div>
+        </article>
+      </section>
+
+      <section class="card-grid two-column">
+        <article class="card">
+          <div class="section-head">
+            <h2>Discovery Lane</h2>
+            <p>Separate search-only system for new candidate dealer domains.</p>
+          </div>
+          <div class="list-stack">
+            <div class="metric-row">
+              <span>Queued Discovery Tasks</span>
+              <strong>{{ "{:,}".format(data.discovery_overview.queued_tasks or 0) }}</strong>
+            </div>
+            <div class="metric-row">
+              <span>Discovery Runs Last 24h</span>
+              <strong>{{ "{:,}".format(data.discovery_overview.runs_last_24h or 0) }}</strong>
+            </div>
+            <div class="metric-row">
+              <span>Total Candidate Domains</span>
+              <strong>{{ "{:,}".format(data.discovery_overview.total_candidates or 0) }}</strong>
+            </div>
+            <div class="metric-row">
+              <span>New Candidates</span>
+              <strong>{{ "{:,}".format(data.discovery_overview.new_candidates or 0) }}</strong>
+            </div>
+            <div class="metric-row">
+              <span>Duplicate Existing Domains</span>
+              <strong>{{ "{:,}".format(data.discovery_overview.duplicate_existing_candidates or 0) }}</strong>
+            </div>
+            <div class="metric-row">
+              <span>Promoted Candidates</span>
+              <strong>{{ "{:,}".format(data.discovery_overview.promoted_candidates or 0) }}</strong>
+            </div>
+            <div class="metric-row">
+              <span>Rejected Candidates</span>
+              <strong>{{ "{:,}".format(data.discovery_overview.rejected_candidates or 0) }}</strong>
+            </div>
+            <div class="metric-row">
+              <span>Last Discovery Run</span>
+              <strong>{{ data.discovery_overview.last_run_at or "-" }}</strong>
+            </div>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="section-head">
+            <h2>Recent Discovery Runs</h2>
+            <p>Independent run log for the separate discovery worker.</p>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Run Type</th>
+                <th>Status</th>
+                <th>Claimed</th>
+                <th>Succeeded</th>
+                <th>Failed</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in data.recent_discovery_runs %}
+              <tr>
+                <td>{{ row.run_type }}</td>
+                <td><span class="pill pill-{{ 'healthy' if row.run_status == 'completed' else 'warning' if row.run_status in ('running', 'preview', 'partial_failure') else 'error' }}">{{ row.run_status }}</span></td>
+                <td>{{ "{:,}".format(row.claimed_count or 0) }}</td>
+                <td>{{ "{:,}".format(row.succeeded_count or 0) }}</td>
+                <td>{{ "{:,}".format(row.failed_count or 0) }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
         </article>
       </section>
 
@@ -308,12 +398,19 @@
               <p>Recent provider results from the last 24 hours for protected-site account facts.</p>
             </div>
             <div class="list-stack">
+             {% if data.ai_provider_counts %}
              {% for row in data.ai_provider_counts %}
               <div class="metric-row">
                <span>{{ row.label }}: {{ "{:,}".format(row.successful_retrievals or 0) }} ok / {{ "{:,}".format(row.failed_retrievals or 0) }} failed / {{ "{:,}".format(row.rate_limited_retrievals or 0) }} rate-limited</span>
                 <strong>{{ "{:,}".format(row.total_attempts or 0) }}</strong>
               </div>
               {% endfor %}
+              {% else %}
+              <div class="empty-state">
+                <strong>No recent AI retrieval activity</strong>
+                <p>The last 24 hours do not have any AI provider result rows yet.</p>
+              </div>
+              {% endif %}
           </div>
         </article>
 

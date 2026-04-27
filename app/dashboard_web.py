@@ -45,6 +45,16 @@ def client_records() -> str:
     return render_template("client_records.html", data=data)
 
 
+@app.get("/discovery-candidates")
+def discovery_candidates() -> str:
+    """Render a read-only page for domain discovery candidate rows."""
+
+    page = request.args.get("page", default=1, type=int) or 1
+    page_size = request.args.get("page_size", default=100, type=int) or 100
+    data = _get_dashboard_service().get_discovery_candidates_page(page=page, page_size=page_size)
+    return render_template("discovery_candidates.html", data=data)
+
+
 @app.get("/healthz")
 def healthcheck():
     """Return a minimal health check for load balancers and Cloud Run."""

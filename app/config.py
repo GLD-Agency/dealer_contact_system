@@ -28,6 +28,9 @@ class Settings:
     sync_targets_table: str
     account_work_queue_table: str
     pipeline_runs_table: str
+    domain_discovery_queue_table: str
+    domain_discovery_runs_table: str
+    discovered_domain_candidates_table: str
     dashboard_snapshots_table: str
     external_seed_contacts_table: str
     prospect_leads_table: str
@@ -47,6 +50,13 @@ class Settings:
     retry_blocked_worker_batch_size: int
     campaign_monitor_sync_batch_size: int
     campaign_monitor_sync_enabled: bool
+    domain_discovery_enabled: bool
+    domain_discovery_batch_size: int
+    domain_discovery_query_batch_size: int
+    domain_discovery_cooldown_hours: int
+    domain_discovery_promotion_enabled: bool
+    domain_discovery_schedule_hint: str
+    domain_discovery_search_endpoint: str
     gbp_enrichment_enabled: bool
     gbp_provider: str
     gbp_search_endpoint: str
@@ -141,6 +151,24 @@ class Settings:
         return self.table_fqn(self.pipeline_runs_table)
 
     @property
+    def domain_discovery_queue_table_fqn(self) -> str:
+        """Return the fully qualified domain discovery queue table name."""
+
+        return self.table_fqn(self.domain_discovery_queue_table)
+
+    @property
+    def domain_discovery_runs_table_fqn(self) -> str:
+        """Return the fully qualified domain discovery runs table name."""
+
+        return self.table_fqn(self.domain_discovery_runs_table)
+
+    @property
+    def discovered_domain_candidates_table_fqn(self) -> str:
+        """Return the fully qualified discovered domain candidates table name."""
+
+        return self.table_fqn(self.discovered_domain_candidates_table)
+
+    @property
     def dashboard_snapshots_table_fqn(self) -> str:
         """Return the fully qualified dashboard snapshots table name."""
 
@@ -213,6 +241,12 @@ def get_settings() -> Settings:
         sync_targets_table=os.getenv("SYNC_TARGETS_TABLE", "sync_targets"),
         account_work_queue_table=os.getenv("ACCOUNT_WORK_QUEUE_TABLE", "account_work_queue"),
         pipeline_runs_table=os.getenv("PIPELINE_RUNS_TABLE", "pipeline_runs"),
+        domain_discovery_queue_table=os.getenv("DOMAIN_DISCOVERY_QUEUE_TABLE", "domain_discovery_queue"),
+        domain_discovery_runs_table=os.getenv("DOMAIN_DISCOVERY_RUNS_TABLE", "domain_discovery_runs"),
+        discovered_domain_candidates_table=os.getenv(
+            "DISCOVERED_DOMAIN_CANDIDATES_TABLE",
+            "discovered_domain_candidates",
+        ),
         dashboard_snapshots_table=os.getenv("DASHBOARD_SNAPSHOTS_TABLE", "dashboard_snapshots"),
         external_seed_contacts_table=os.getenv("EXTERNAL_SEED_CONTACTS_TABLE", "external_seed_contacts"),
         prospect_leads_table=os.getenv("PROSPECT_LEADS_TABLE", "prospect_leads"),
@@ -235,6 +269,16 @@ def get_settings() -> Settings:
         retry_blocked_worker_batch_size=int(os.getenv("RETRY_BLOCKED_WORKER_BATCH_SIZE", "10")),
         campaign_monitor_sync_batch_size=int(os.getenv("CAMPAIGN_MONITOR_SYNC_BATCH_SIZE", "100")),
         campaign_monitor_sync_enabled=os.getenv("CAMPAIGN_MONITOR_SYNC_ENABLED", "false").lower() == "true",
+        domain_discovery_enabled=os.getenv("DOMAIN_DISCOVERY_ENABLED", "true").lower() == "true",
+        domain_discovery_batch_size=int(os.getenv("DOMAIN_DISCOVERY_BATCH_SIZE", "5")),
+        domain_discovery_query_batch_size=int(os.getenv("DOMAIN_DISCOVERY_QUERY_BATCH_SIZE", "40")),
+        domain_discovery_cooldown_hours=int(os.getenv("DOMAIN_DISCOVERY_COOLDOWN_HOURS", "72")),
+        domain_discovery_promotion_enabled=os.getenv("DOMAIN_DISCOVERY_PROMOTION_ENABLED", "true").lower() == "true",
+        domain_discovery_schedule_hint=os.getenv("DOMAIN_DISCOVERY_SCHEDULE_HINT", "*/60 * * * *"),
+        domain_discovery_search_endpoint=os.getenv(
+            "DOMAIN_DISCOVERY_SEARCH_ENDPOINT",
+            "https://html.duckduckgo.com/html/",
+        ),
         gbp_enrichment_enabled=os.getenv("GBP_ENRICHMENT_ENABLED", "true").lower() == "true",
         gbp_provider=os.getenv("GBP_PROVIDER", "duckduckgo_search_fallback"),
         gbp_search_endpoint=os.getenv("GBP_SEARCH_ENDPOINT", "https://html.duckduckgo.com/html/"),

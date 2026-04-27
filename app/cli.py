@@ -19,6 +19,7 @@ from app.services.campaign_monitor import CampaignMonitorService
 from app.services.client_dim import ClientDimService
 from app.services.contact_extraction import ContactExtractionService
 from app.services.dealer_validation import DealerValidationService
+from app.services.domain_discovery import DomainDiscoveryService
 from app.services.external_seed_import import ExternalSeedImportService
 from app.services.external_seed_promotion import ExternalSeedPromotionService
 from app.services.gbp_enrichment import GbpEnrichmentService
@@ -189,6 +190,68 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="Preview the cycle without processing queue items.",
+    )
+
+    discovery_seed_parser = subparsers.add_parser(
+        "seed-domain-discovery",
+        help="Seed discovery-only search tasks into the separate domain discovery queue.",
+    )
+    discovery_seed_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview discovery queue seeding without writing queue rows.",
+    )
+
+    discovery_worker_parser = subparsers.add_parser(
+        "run-domain-discovery-worker",
+        help="Claim and process one batch from the separate domain discovery queue.",
+    )
+    discovery_worker_parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Override the default domain discovery worker batch size for this run.",
+    )
+    discovery_worker_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview the discovery worker without processing queued tasks.",
+    )
+
+    discovery_cycle_parser = subparsers.add_parser(
+        "run-domain-discovery-cycle",
+        help="Run one full discovery-only cycle for the separate Cloud Run discovery job.",
+    )
+    discovery_cycle_parser.add_argument(
+        "--seed",
+        action="store_true",
+        help="Seed the discovery queue before running the discovery cycle.",
+    )
+    discovery_cycle_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview the discovery cycle without processing queued tasks or promotions.",
+    )
+
+    discovery_promote_parser = subparsers.add_parser(
+        "promote-discovered-domains",
+        help="Promote truly new discovered domain candidates into the canonical intake path.",
+    )
+    discovery_promote_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview domain candidate promotion without writing canonical rows.",
+    )
+    discovery_promote_parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Override the default discovered-domain promotion batch size for this run.",
+    )
+
+    subparsers.add_parser(
+        "report-domain-discovery",
+        help="Print queue and candidate counts for the separate domain discovery system.",
     )
 
     subparsers.add_parser(
@@ -377,6 +440,7 @@ def main() -> None:
     prospect_lead_service = ProspectLeadService(repository, settings)
     client_dim_service = ClientDimService(repository, settings)
     managed_fetch_service = ManagedFetchService(repository, settings)
+    domain_discovery_service = DomainDiscoveryService(repository, settings)
 
     logger.info(
         "Starting command | environment=%s | project=%s | dataset=%s | command=%s",
@@ -500,6 +564,53 @@ def main() -> None:
                     limit=settings.campaign_monitor_sync_batch_size,
                 )
         logger.info("Queue cycle command complete.")
+        return
+
+    if args.command == "seed-domain-discovery":
+        seeded = domain_discovery_service.seed_queue(dry_run=args.dry_run)
+        print(f"Discovery tasks {'would be seeded' if args.dry_run else 'seeded'}: {seeded}")
+        logger.info("Domain discovery seed command complete.")
+        return
+
+    if args.command == "run-domain-discovery-worker":
+        result = domain_discovery_service.run_worker(
+            dry_run=args.dry_run,
+            batch_size=args.batch_size,
+        )
+        print(f"Discovery worker status: {result.status}")
+        print(result.detail)
+        print(f"Processed tasks: {result.processed_tasks}")
+        print(f"Candidates written: {result.candidates_written}")
+        logger.info("Domain discovery worker command complete.")
+        return
+
+    if args.command == "run-domain-discovery-cycle":
+        result = domain_discovery_service.run_cycle(seed=args.seed, dry_run=args.dry_run)
+        print(f"Discovery cycle status: {result.status}")
+        print(result.detail)
+        print(f"Processed tasks: {result.processed_tasks}")
+        print(f"Candidates written: {result.candidates_written}")
+        print(f"Promoted candidates: {result.promoted_candidates}")
+        logger.info("Domain discovery cycle command complete.")
+        return
+
+    if args.command == "promote-discovered-domains":
+        result = domain_discovery_service.promote_candidates(dry_run=args.dry_run, limit=args.limit)
+        print(f"Domain promotion status: {result.status}")
+        print(result.detail)
+        print(f"Promoted candidates: {result.promoted_candidates}")
+        logger.info("Domain discovery promotion command complete.")
+        return
+
+    if args.command == "report-domain-discovery":
+        report = domain_discovery_service.report()
+        print(f"Queued discovery tasks: {report.get('queued_tasks', 0)}")
+        print(f"Total discovery candidates: {report.get('total_candidates', 0)}")
+        print(f"New candidates: {report.get('new_candidates', 0)}")
+        print(f"Duplicate existing candidates: {report.get('duplicate_existing_candidates', 0)}")
+        print(f"Promoted candidates: {report.get('promoted_candidates', 0)}")
+        print(f"Rejected candidates: {report.get('rejected_candidates', 0)}")
+        logger.info("Domain discovery report command complete.")
         return
 
     if args.command == "report":
@@ -755,7 +866,13 @@ def print_report(repository: BigQueryRepository, settings: Settings) -> None:
       (SELECT COUNTIF(task_type = 'extract_contacts' AND status IN ('pending', 'retry')) FROM `{settings.account_work_queue_table_fqn}`) AS queued_extract_contacts,
       (SELECT COUNTIF(task_type = 'retry_blocked' AND status IN ('pending', 'retry')) FROM `{settings.account_work_queue_table_fqn}`) AS queued_retry_blocked,
       (SELECT COUNTIF(status = 'in_progress') FROM `{settings.account_work_queue_table_fqn}`) AS queue_in_progress,
-      (SELECT COUNT(*) FROM `{settings.pipeline_runs_table_fqn}`) AS pipeline_runs
+      (SELECT COUNT(*) FROM `{settings.pipeline_runs_table_fqn}`) AS pipeline_runs,
+      (SELECT COUNTIF(status IN ('pending', 'retry')) FROM `{settings.domain_discovery_queue_table_fqn}`) AS queued_discovery_tasks,
+      (SELECT COUNT(*) FROM `{settings.discovered_domain_candidates_table_fqn}`) AS discovery_candidates,
+      (SELECT COUNTIF(promotion_status = 'duplicate_existing') FROM `{settings.discovered_domain_candidates_table_fqn}`) AS discovery_duplicate_existing,
+      (SELECT COUNTIF(promotion_status = 'promoted_to_main_pipeline') FROM `{settings.discovered_domain_candidates_table_fqn}`) AS discovery_promoted_candidates,
+      (SELECT COUNTIF(STARTS_WITH(promotion_status, 'rejected')) FROM `{settings.discovered_domain_candidates_table_fqn}`) AS discovery_rejected_candidates,
+      (SELECT COUNT(*) FROM `{settings.domain_discovery_runs_table_fqn}`) AS discovery_runs
     """
     report = repository.fetch_one(query)
     logger.info("Read-only report | source=%s", settings.source_contact_table_fqn)
@@ -815,6 +932,12 @@ def print_report(repository: BigQueryRepository, settings: Settings) -> None:
     print(f"Queued blocked-site retry tasks: {report.get('queued_retry_blocked', 0)}")
     print(f"Queue items in progress: {report.get('queue_in_progress', 0)}")
     print(f"Pipeline runs logged: {report.get('pipeline_runs', 0)}")
+    print(f"Queued discovery tasks: {report.get('queued_discovery_tasks', 0)}")
+    print(f"Discovery candidates: {report.get('discovery_candidates', 0)}")
+    print(f"Discovery duplicate existing: {report.get('discovery_duplicate_existing', 0)}")
+    print(f"Discovery promoted candidates: {report.get('discovery_promoted_candidates', 0)}")
+    print(f"Discovery rejected candidates: {report.get('discovery_rejected_candidates', 0)}")
+    print(f"Discovery runs logged: {report.get('discovery_runs', 0)}")
 
 
 if __name__ == "__main__":

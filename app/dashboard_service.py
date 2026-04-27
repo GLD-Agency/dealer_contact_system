@@ -40,6 +40,7 @@ class DashboardService:
             "project_id": self.settings.bigquery_project_id,
             "dataset": self.settings.bigquery_dataset,
             "overview": overview,
+            "discovery_overview": self._get_discovery_overview(),
             "snapshot_summary": self._build_snapshot_summary(latest_snapshot, previous_snapshot),
             "trend_rows": trend_rows,
             "trend_cards": self._build_trend_cards(trend_rows),
@@ -51,6 +52,7 @@ class DashboardService:
             "ai_provider_counts": self._get_ai_provider_counts(),
             "queue_rows": self._get_queue_rows(),
             "recent_runs": self._get_recent_runs(),
+            "recent_discovery_runs": self._get_recent_discovery_runs(),
             "blocked_accounts": self._get_blocked_accounts(),
             "integration_connections": self._get_integration_connections(),
         }
@@ -95,6 +97,58 @@ class DashboardService:
             "project_id": self.settings.bigquery_project_id,
             "dataset": self.settings.bigquery_dataset,
             "table_name": self.settings.prospect_leads_table_fqn,
+            "columns": columns,
+            "rows": rows,
+            "page": safe_page,
+            "page_size": safe_page_size,
+            "total_rows": total_rows,
+            "total_pages": total_pages,
+            "has_previous": safe_page > 1,
+            "has_next": safe_page < total_pages,
+            "previous_page": max(safe_page - 1, 1),
+            "next_page": min(safe_page + 1, total_pages),
+        }
+
+    def get_discovery_candidates_page(self, page: int = 1, page_size: int = 100) -> dict[str, Any]:
+        """Return paginated discovery candidate rows for read-only UI review."""
+
+        safe_page = max(page, 1)
+        safe_page_size = min(max(page_size, 25), 250)
+        offset = (safe_page - 1) * safe_page_size
+
+        count_query = f"""
+        SELECT COUNT(*) AS total_rows
+        FROM `{self.settings.discovered_domain_candidates_table_fqn}`
+        """
+        total_rows = int(self.repository.fetch_one(count_query).get("total_rows", 0))
+
+        column_query = f"""
+        SELECT column_name
+        FROM `{self.settings.bigquery_project_id}.{self.settings.bigquery_dataset}.INFORMATION_SCHEMA.COLUMNS`
+        WHERE table_name = '{self.settings.discovered_domain_candidates_table}'
+        ORDER BY ordinal_position
+        """
+        columns = [row["column_name"] for row in self.repository.fetch_all(column_query)]
+
+        data_query = f"""
+        SELECT *
+        FROM `{self.settings.discovered_domain_candidates_table_fqn}`
+        ORDER BY updated_at DESC NULLS LAST, discovered_at DESC NULLS LAST, candidate_domain
+        LIMIT {safe_page_size}
+        OFFSET {offset}
+        """
+        rows = [
+            {key: self._serialize_table_value(value) for key, value in row.items()}
+            for row in self.repository.fetch_all(data_query)
+        ]
+
+        total_pages = max((total_rows + safe_page_size - 1) // safe_page_size, 1)
+        return {
+            "generated_at": datetime.now().strftime("%Y-%m-%d %I:%M %p"),
+            "environment": self.settings.environment,
+            "project_id": self.settings.bigquery_project_id,
+            "dataset": self.settings.bigquery_dataset,
+            "table_name": self.settings.discovered_domain_candidates_table_fqn,
             "columns": columns,
             "rows": rows,
             "page": safe_page,
@@ -234,7 +288,31 @@ class DashboardService:
           (SELECT COUNTIF(task_type = 'retry_blocked' AND status IN ('pending', 'retry')) FROM `{self.settings.account_work_queue_table_fqn}`) AS queued_retry_blocked,
           (SELECT COUNTIF(status = 'in_progress') FROM `{self.settings.account_work_queue_table_fqn}`) AS queue_in_progress,
           (SELECT COUNTIF(fetch_status = 'blocked' AND dealer_classification IN ('dealer', 'dealer_group')) FROM `{self.settings.dealer_accounts_table_fqn}`) AS blocked_fetch_accounts,
-          (SELECT COUNTIF(managed_fetch_status = 'eligible') FROM `{self.settings.dealer_accounts_table_fqn}`) AS managed_fetch_eligible_accounts
+          (SELECT COUNTIF(managed_fetch_status = 'eligible') FROM `{self.settings.dealer_accounts_table_fqn}`) AS managed_fetch_eligible_accounts,
+          (SELECT COUNTIF(status IN ('pending', 'retry')) FROM `{self.settings.domain_discovery_queue_table_fqn}`) AS queued_discovery_tasks,
+          (SELECT COUNT(*) FROM `{self.settings.discovered_domain_candidates_table_fqn}`) AS discovery_candidates,
+          (SELECT COUNTIF(promotion_status = 'duplicate_existing') FROM `{self.settings.discovered_domain_candidates_table_fqn}`) AS discovery_duplicate_existing,
+          (SELECT COUNTIF(promotion_status = 'promoted_to_main_pipeline') FROM `{self.settings.discovered_domain_candidates_table_fqn}`) AS discovery_promoted_candidates,
+          (SELECT COUNTIF(STARTS_WITH(promotion_status, 'rejected')) FROM `{self.settings.discovered_domain_candidates_table_fqn}`) AS discovery_rejected_candidates
+        """
+        return self.repository.fetch_one(query)
+
+    def _get_discovery_overview(self) -> dict[str, Any]:
+        """Return a separate top-line summary for the discovery-only subsystem."""
+
+        query = f"""
+        SELECT
+          (SELECT COUNTIF(status IN ('pending', 'retry')) FROM `{self.settings.domain_discovery_queue_table_fqn}`) AS queued_tasks,
+          (SELECT COUNT(*) FROM `{self.settings.discovered_domain_candidates_table_fqn}`) AS total_candidates,
+          (SELECT COUNTIF(promotion_status = 'new') FROM `{self.settings.discovered_domain_candidates_table_fqn}`) AS new_candidates,
+          (SELECT COUNTIF(promotion_status = 'duplicate_existing') FROM `{self.settings.discovered_domain_candidates_table_fqn}`) AS duplicate_existing_candidates,
+          (SELECT COUNTIF(promotion_status = 'promoted_to_main_pipeline') FROM `{self.settings.discovered_domain_candidates_table_fqn}`) AS promoted_candidates,
+          (SELECT COUNTIF(STARTS_WITH(promotion_status, 'rejected')) FROM `{self.settings.discovered_domain_candidates_table_fqn}`) AS rejected_candidates,
+          (SELECT COUNT(*) FROM `{self.settings.domain_discovery_runs_table_fqn}` WHERE started_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 24 HOUR)) AS runs_last_24h,
+          (
+            SELECT MAX(started_at)
+            FROM `{self.settings.domain_discovery_runs_table_fqn}`
+          ) AS last_run_at
         """
         return self.repository.fetch_one(query)
 
@@ -504,6 +582,7 @@ class DashboardService:
         """Create human-readable system health rows."""
 
         system_statuses = self._get_named_system_statuses(("client_dim", "managed_fetch", "gbp_enrichment", "ai_retrieval"))
+        discovery_overview = self._get_discovery_overview()
         ai_configured = bool(
             (self.settings.gemini_enabled and self.settings.gemini_api_key)
             or (self.settings.openai_enabled and self.settings.openai_api_key)
@@ -523,6 +602,14 @@ class DashboardService:
                 name="Worker Queue",
                 status="healthy" if int(overview.get("pipeline_runs", 0)) > 0 else "warning",
                 detail=f"{int(overview.get('queue_in_progress', 0)):,} items in progress across queue workers",
+            ),
+            DashboardConnectionStatus(
+                name="Discovery Worker",
+                status="healthy" if self.settings.domain_discovery_enabled else "warning",
+                detail=(
+                    f"{int(discovery_overview.get('queued_tasks', 0)):,} queued search tasks and "
+                    f"{int(discovery_overview.get('runs_last_24h', 0)):,} run(s) logged in the last 24 hours"
+                ),
             ),
             DashboardConnectionStatus(
                 name="Blocked-Site Retry",
@@ -834,6 +921,27 @@ class DashboardService:
         FROM `{self.settings.pipeline_runs_table_fqn}`
         ORDER BY started_at DESC
         LIMIT 12
+        """
+        return self.repository.fetch_all(query)
+
+    def _get_recent_discovery_runs(self) -> list[dict[str, Any]]:
+        """Return the most recent discovery-only runs."""
+
+        query = f"""
+        SELECT
+          run_type,
+          run_status,
+          requested_batch_size,
+          claimed_count,
+          succeeded_count,
+          failed_count,
+          worker_id,
+          started_at,
+          completed_at,
+          run_notes
+        FROM `{self.settings.domain_discovery_runs_table_fqn}`
+        ORDER BY started_at DESC
+        LIMIT 8
         """
         return self.repository.fetch_all(query)
 
