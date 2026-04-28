@@ -16,6 +16,7 @@ from app.bigquery_repository import BigQueryRepository
 from app.config import Settings
 from app.logging_utils import get_logger
 from app.metro_targets import METRO_DISCOVERY_TARGETS
+from app.services.ai_retrieval import dedupe_urls, parse_json_text
 from app.web_fetcher import DEFAULT_HEADERS
 
 
@@ -147,6 +148,7 @@ class DiscoverySearchResult:
     title: str
     snippet: str
     url: str
+    source_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -242,8 +244,9 @@ class DomainDiscoveryRunLogger:
 class DomainDiscoveryService:
     """Find and promote new dealer domain candidates on a separate queue."""
 
-    SOURCE_ENGINE = "duckduckgo_html"
+    SOURCE_ENGINE = "domain_discovery"
     PROMOTION_CONFIDENCE_THRESHOLD = 0.52
+    GEMINI_SEARCH_URL_TEMPLATE = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
     def __init__(self, repository: BigQueryRepository, settings: Settings) -> None:
         self.repository = repository
@@ -1017,18 +1020,13 @@ class DomainDiscoveryService:
     def _discover_candidates_for_task(self, item: DiscoveryQueueItem) -> list[dict[str, Any]]:
         """Search the web for candidate dealer domains for one search term."""
 
-        response = self.session.get(
-            self.settings.domain_discovery_search_endpoint,
-            params={"q": item.search_term},
-            timeout=self.settings.request_timeout_seconds,
-        )
-        response.raise_for_status()
-        search_results = self._parse_search_results(response.text)
+        search_results, source_engine = self._search_discovery_results(item)
         existing_domains = self._load_existing_domains()
         candidates: list[dict[str, Any]] = []
         seen_domains: set[str] = set()
         for result in search_results:
             candidate_url = self._normalize_result_url(result.url)
+            evidence_url = self._normalize_result_url(result.source_url or result.url)
             candidate_domain = self._normalize_domain(candidate_url)
             if not candidate_domain or candidate_domain in seen_domains:
                 continue
@@ -1060,8 +1058,8 @@ class DomainDiscoveryService:
                     "candidate_domain": candidate_domain,
                     "candidate_website_url": candidate_url,
                     "candidate_account_name": account_name or candidate_domain,
-                    "source_engine": self.SOURCE_ENGINE,
-                    "source_url": candidate_url,
+                    "source_engine": source_engine,
+                    "source_url": evidence_url or candidate_url,
                     "discovered_at": datetime.now(timezone.utc).isoformat(),
                     "confidence_score": round(confidence, 3),
                     "dedupe_key": dedupe_key,
@@ -1078,6 +1076,186 @@ class DomainDiscoveryService:
         )
         return candidates
 
+    def _search_discovery_results(self, item: DiscoveryQueueItem) -> tuple[list[DiscoverySearchResult], str]:
+        """Search providers in order until one yields candidate dealer results."""
+
+        provider_order = [
+            part.strip().lower()
+            for part in self.settings.domain_discovery_provider_order.split(",")
+            if part.strip()
+        ] or ["gemini_google_search", "duckduckgo_html"]
+        errors: list[str] = []
+        for provider_name in provider_order:
+            try:
+                if provider_name == "gemini_google_search":
+                    results = self._search_results_via_gemini_google(item)
+                elif provider_name == "duckduckgo_html":
+                    results = self._search_results_via_duckduckgo(item)
+                else:
+                    logger.warning("Unknown discovery provider skipped | provider=%s", provider_name)
+                    continue
+            except Exception as exc:
+                errors.append(f"{provider_name}: {exc}")
+                logger.warning(
+                    "Discovery provider failed | provider=%s | search_term=%s | error=%s",
+                    provider_name,
+                    item.search_term,
+                    exc,
+                )
+                continue
+            if results:
+                return results, provider_name
+        if errors:
+            raise RuntimeError("; ".join(errors))
+        return [], provider_order[0]
+
+    def _search_results_via_duckduckgo(self, item: DiscoveryQueueItem) -> list[DiscoverySearchResult]:
+        """Fetch discovery search results from DuckDuckGo HTML as a fallback only."""
+
+        response = self.session.get(
+            self.settings.domain_discovery_search_endpoint,
+            params={"q": item.search_term},
+            timeout=self.settings.request_timeout_seconds,
+        )
+        response.raise_for_status()
+        return self._parse_search_results(response.text)
+
+    def _search_results_via_gemini_google(self, item: DiscoveryQueueItem) -> list[DiscoverySearchResult]:
+        """Use Gemini with Google Search grounding to find likely rooftop dealer domains."""
+
+        if not (self.settings.gemini_enabled and self.settings.gemini_api_key):
+            return []
+        prompt = self._build_gemini_discovery_prompt(item)
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "tools": [{"googleSearch": {}}],
+            "generationConfig": {
+                "temperature": 0.1,
+            },
+        }
+        response = self.session.post(
+            self.GEMINI_SEARCH_URL_TEMPLATE.format(model=self.settings.gemini_model),
+            params={"key": self.settings.gemini_api_key},
+            json=payload,
+            timeout=self.settings.request_timeout_seconds * 3,
+        )
+        response.raise_for_status()
+        body = response.json()
+        parsed = self._parse_gemini_discovery_payload(body)
+        citations = self._extract_gemini_citations(body)
+        results: list[DiscoverySearchResult] = []
+        seen_urls: set[str] = set()
+        for candidate in parsed:
+            website_url = self._normalize_url(candidate.get("website_url"))
+            source_url = self._normalize_url(candidate.get("source_url"))
+            title = str(candidate.get("dealer_name") or "").strip()
+            snippet = str(candidate.get("reason") or "").strip()
+            confidence = candidate.get("confidence")
+            try:
+                confidence_text = f"confidence={float(confidence):.2f}"
+            except (TypeError, ValueError):
+                confidence_text = ""
+            snippet = " | ".join(part for part in [snippet, confidence_text] if part)
+            final_url = website_url or source_url
+            if not final_url or final_url in seen_urls:
+                continue
+            seen_urls.add(final_url)
+            if not source_url and citations:
+                source_url = citations[0]
+            results.append(
+                DiscoverySearchResult(
+                    title=title or self._normalize_domain(final_url) or final_url,
+                    snippet=snippet,
+                    url=final_url,
+                    source_url=source_url or final_url,
+                )
+            )
+        return results
+
+    def _build_gemini_discovery_prompt(self, item: DiscoveryQueueItem) -> str:
+        """Build a simple Gemini discovery prompt focused on rooftop dealer domains."""
+
+        return (
+            "Find real rooftop auto dealer websites for this market search.\n"
+            "Use Google Search results, prefer the dealer's own website domain, and exclude directories, marketplaces, "
+            "OEM corporate sites, review sites, maps listings, chamber pages, and vendor pages.\n"
+            "Return only valid JSON with this shape:\n"
+            "{\n"
+            '  "results": [\n'
+            "    {\n"
+            '      "dealer_name": string,\n'
+            '      "website_url": string,\n'
+            '      "source_url": string,\n'
+            '      "reason": string,\n'
+            '      "confidence": number\n'
+            "    }\n"
+            "  ]\n"
+            "}\n"
+            "Rules:\n"
+            "- Only include likely real dealership rooftop websites.\n"
+            "- If the result is a directory or non-rooftop page, exclude it.\n"
+            "- Use the dealer's own domain in website_url when you can determine it.\n"
+            "- source_url should be the search-grounded page you used to infer the dealer website.\n"
+            "- confidence must be between 0 and 1.\n"
+            f"Search: {item.search_term}\n"
+            f"Brand hint: {item.brand_hint}\n"
+            f"City: {item.city or ''}\n"
+            f"State or province: {item.state_or_province or ''}\n"
+            f"Country: {item.country or ''}\n"
+        )
+
+    def _parse_gemini_discovery_payload(self, body: dict[str, Any]) -> list[dict[str, Any]]:
+        """Parse Gemini discovery JSON into a list of candidate dealer websites."""
+
+        text = self._extract_gemini_text(body)
+        parsed = parse_json_text(text)
+        if not parsed and text:
+            match = re.search(r"\{.*\}", text, re.DOTALL)
+            if match:
+                parsed = parse_json_text(match.group(0))
+        results = parsed.get("results") if isinstance(parsed, dict) else None
+        if not isinstance(results, list):
+            return []
+        normalized: list[dict[str, Any]] = []
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            normalized.append(item)
+        return normalized
+
+    def _extract_gemini_text(self, body: dict[str, Any]) -> str:
+        """Extract the primary text part from a Gemini response body."""
+
+        candidates = body.get("candidates") or []
+        if not candidates:
+            return ""
+        content = (candidates[0] or {}).get("content") or {}
+        parts = content.get("parts") or []
+        fallback_text = ""
+        for part in parts:
+            if isinstance(part, dict) and part.get("text"):
+                text = str(part["text"])
+                stripped = text.strip()
+                if stripped.startswith("```json") or stripped.startswith("{"):
+                    return text
+                if not fallback_text:
+                    fallback_text = text
+        return fallback_text
+
+    def _extract_gemini_citations(self, body: dict[str, Any]) -> list[str]:
+        """Extract grounded citation URLs from a Gemini response."""
+
+        citations: list[str] = []
+        candidates = body.get("candidates") or []
+        if candidates:
+            grounding = (candidates[0] or {}).get("groundingMetadata") or {}
+            for chunk in grounding.get("groundingChunks") or []:
+                web = (chunk or {}).get("web") or {}
+                uri = web.get("uri")
+                if uri:
+                    citations.append(str(uri))
+        return dedupe_urls(citations)
+
     def _parse_search_results(self, html: str) -> list[DiscoverySearchResult]:
         """Parse DuckDuckGo HTML result rows into simple objects."""
 
@@ -1092,7 +1270,7 @@ class DomainDiscoveryService:
             snippet_node = result_node.select_one(".result__snippet")
             snippet = snippet_node.get_text(" ", strip=True) if snippet_node else ""
             if title and url:
-                results.append(DiscoverySearchResult(title=title, snippet=snippet, url=url))
+                results.append(DiscoverySearchResult(title=title, snippet=snippet, url=url, source_url=url))
         return results
 
     def _upsert_candidates(self, candidates: list[dict[str, Any]]) -> None:

@@ -12,6 +12,10 @@ param(
     [int]$DomainDiscoveryCooldownHours = 72,
     [int]$DomainDiscoveryUsSharePercent = 85,
     [bool]$DomainDiscoveryPromotionEnabled = $true,
+    [string]$DomainDiscoveryProviderOrder = "gemini_google_search,duckduckgo_html",
+    [bool]$GeminiEnabled = $true,
+    [string]$GeminiModel = "gemini-2.5-flash",
+    [string]$GeminiApiKeySecret = "gemini-api-key:latest",
     [int]$TaskTimeoutSeconds = 1800
 )
 
@@ -31,7 +35,10 @@ $envVars = @(
     "DOMAIN_DISCOVERY_QUERY_BATCH_SIZE=$DomainDiscoveryQueryBatchSize",
     "DOMAIN_DISCOVERY_COOLDOWN_HOURS=$DomainDiscoveryCooldownHours",
     "DOMAIN_DISCOVERY_US_SHARE_PERCENT=$DomainDiscoveryUsSharePercent",
-    "DOMAIN_DISCOVERY_PROMOTION_ENABLED=$($DomainDiscoveryPromotionEnabled.ToString().ToLower())"
+    "DOMAIN_DISCOVERY_PROMOTION_ENABLED=$($DomainDiscoveryPromotionEnabled.ToString().ToLower())",
+    "DOMAIN_DISCOVERY_PROVIDER_ORDER=$DomainDiscoveryProviderOrder",
+    "GEMINI_ENABLED=$($GeminiEnabled.ToString().ToLower())",
+    "GEMINI_MODEL=$GeminiModel"
 )
 
 if ($env:DOMAIN_DISCOVERY_SEARCH_ENDPOINT) {
@@ -61,6 +68,10 @@ $envVarMap.GetEnumerator() |
         "$($_.Name): '$escaped'"
     } | Set-Content -Path $envFile -Encoding UTF8
 
+$secretMappings = @(
+    "GEMINI_API_KEY=$GeminiApiKeySecret"
+) -join ","
+
 Write-Host "Ensuring Artifact Registry repository exists..."
 cmd /c "gcloud artifacts repositories describe $Repository --location=$Region --project=$ProjectId >nul 2>nul"
 if ($LASTEXITCODE -ne 0) {
@@ -78,6 +89,7 @@ $deployArgs = @(
     "--project=$ProjectId",
     "--service-account $ServiceAccountEmail",
     "--env-vars-file $envFile",
+    "--set-secrets $secretMappings",
     "--max-retries 0",
     "--task-timeout ${TaskTimeoutSeconds}s",
     "--args run-domain-discovery-cycle,--seed"
