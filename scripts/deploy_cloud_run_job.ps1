@@ -11,7 +11,7 @@ param(
     [int]$AiRetrievalBatchSize = 1,
     [int]$ExtractBatchSize = 25,
     [int]$RetryBlockedBatchSize = 10,
-    [int]$CampaignMonitorSyncBatchSize = 100,
+    [int]$CampaignMonitorSyncBatchSize = 1000,
     [bool]$CampaignMonitorSyncEnabled = $true,
     [string]$CampaignMonitorApiKeySecret = "campaign-monitor-api-key:latest",
     [string]$CampaignMonitorClientIdSecret = "campaign-monitor-client-id:latest",

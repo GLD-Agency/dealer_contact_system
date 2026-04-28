@@ -285,7 +285,7 @@ def get_settings() -> Settings:
         ai_retrieval_batch_size=int(os.getenv("AI_RETRIEVAL_BATCH_SIZE", "1")),
         extract_worker_batch_size=int(os.getenv("EXTRACT_WORKER_BATCH_SIZE", "25")),
         retry_blocked_worker_batch_size=int(os.getenv("RETRY_BLOCKED_WORKER_BATCH_SIZE", "10")),
-        campaign_monitor_sync_batch_size=int(os.getenv("CAMPAIGN_MONITOR_SYNC_BATCH_SIZE", "100")),
+        campaign_monitor_sync_batch_size=int(os.getenv("CAMPAIGN_MONITOR_SYNC_BATCH_SIZE", "1000")),
         campaign_monitor_sync_enabled=os.getenv("CAMPAIGN_MONITOR_SYNC_ENABLED", "false").lower() == "true",
         domain_discovery_enabled=os.getenv("DOMAIN_DISCOVERY_ENABLED", "true").lower() == "true",
         domain_discovery_batch_size=int(os.getenv("DOMAIN_DISCOVERY_BATCH_SIZE", "5")),

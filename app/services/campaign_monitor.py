@@ -341,11 +341,25 @@ class CampaignMonitorService:
         failure_count = len(failure_details)
         new_subscribers = int(result.get("TotalNewSubscribers", 0)) if isinstance(result, dict) else 0
         existing_subscribers = int(result.get("TotalExistingSubscribers", 0)) if isinstance(result, dict) else 0
+        failed_emails = {
+            str(item.get("EmailAddress") or item.get("email") or "").strip().lower()
+            for item in failure_details
+            if isinstance(item, dict)
+        }
+        successful_emails = [
+            subscriber["email"]
+            for subscriber in subscribers
+            if subscriber["email"].strip().lower() not in failed_emails
+        ]
 
         self._record_subscriber_sync_status(
             list_id=structure.list_id,
             submitted_count=len(subscribers),
             failed_count=failure_count,
+        )
+        self._record_individual_subscriber_sync_status(
+            list_id=structure.list_id,
+            emails=successful_emails,
         )
 
         return CampaignMonitorSyncResult(
@@ -524,24 +538,10 @@ class CampaignMonitorService:
         self.repository.execute_statement(query)
 
     def _load_sync_candidates(self, limit: int) -> list[dict[str, str]]:
-        """Load deduped, activation-ready subscribers from BigQuery."""
+        """Load deduped subscribers that are unsynced or changed since last Campaign Monitor sync."""
 
         query = f"""
-        SELECT
-          email,
-          TRIM(full_name) AS full_name,
-          role_family,
-          dealer_name,
-          oem,
-          city,
-          state,
-          phone_number,
-          country,
-          market,
-          audience_type,
-          source_list,
-          dealer_classification
-        FROM (
+        WITH deduped AS (
           SELECT
             email,
             full_name,
@@ -556,6 +556,7 @@ class CampaignMonitorService:
             audience_type,
             source_list,
             dealer_classification,
+            updated_at,
             ROW_NUMBER() OVER (
               PARTITION BY LOWER(email)
               ORDER BY
@@ -568,9 +569,55 @@ class CampaignMonitorService:
           FROM `{self.settings.prospect_leads_table_fqn}`
           WHERE activation_status = 'activation_ready'
             AND COALESCE(prospecting_allowed_flag, TRUE)
+            AND email IS NOT NULL
+            AND TRIM(email) != ''
+        ),
+        ranked AS (
+          SELECT
+            email,
+            TRIM(full_name) AS full_name,
+            role_family,
+            dealer_name,
+            oem,
+            city,
+            state,
+            phone_number,
+            country,
+            market,
+            audience_type,
+            source_list,
+            dealer_classification,
+            updated_at
+          FROM deduped
+          WHERE row_number = 1
         )
-        WHERE row_number = 1
-        ORDER BY oem ASC, dealer_name ASC, email ASC
+        SELECT
+          ranked.email,
+          ranked.full_name,
+          ranked.role_family,
+          ranked.dealer_name,
+          ranked.oem,
+          ranked.city,
+          ranked.state,
+          ranked.phone_number,
+          ranked.country,
+          ranked.market,
+          ranked.audience_type,
+          ranked.source_list,
+          ranked.dealer_classification
+        FROM ranked
+        LEFT JOIN `{self.settings.sync_targets_table_fqn}` AS sync_state
+          ON sync_state.target_system = 'campaign_monitor'
+         AND sync_state.target_entity_type = 'subscriber'
+         AND LOWER(sync_state.target_entity_id) = LOWER(ranked.email)
+        WHERE sync_state.last_synced_at IS NULL
+           OR ranked.updated_at > sync_state.last_synced_at
+        ORDER BY
+          sync_state.last_synced_at ASC NULLS FIRST,
+          ranked.updated_at DESC,
+          ranked.oem ASC,
+          ranked.dealer_name ASC,
+          ranked.email ASC
         LIMIT {int(limit)}
         """
         rows = self.repository.fetch_all(query)
@@ -593,6 +640,79 @@ class CampaignMonitorService:
             for row in rows
             if row.get("email")
         ]
+
+    def _record_individual_subscriber_sync_status(self, list_id: str, emails: list[str]) -> None:
+        """Persist per-email Campaign Monitor sync progress so later runs advance through the list."""
+
+        cleaned_emails = sorted({str(email).strip().lower() for email in emails if str(email).strip()})
+        if not cleaned_emails:
+            return
+        source_sql = "\nUNION ALL\n".join(
+            (
+                "SELECT "
+                "'campaign_monitor' AS target_system, "
+                "'subscriber' AS target_entity_type, "
+                f"'{self._escape_sql_literal(email)}' AS target_entity_id, "
+                "'prospect_lead' AS source_record_type, "
+                f"'{self._escape_sql_literal(email)}' AS source_record_id, "
+                "'synced' AS sync_status"
+            )
+            for email in cleaned_emails
+        )
+        query = f"""
+        MERGE `{self.settings.sync_targets_table_fqn}` AS target
+        USING (
+          {source_sql}
+        ) AS source
+        ON target.target_system = source.target_system
+           AND target.target_entity_type = source.target_entity_type
+           AND LOWER(target.target_entity_id) = LOWER(source.target_entity_id)
+           AND target.source_record_type = source.source_record_type
+           AND target.source_record_id = source.source_record_id
+        WHEN MATCHED THEN
+          UPDATE SET
+            target_entity_id = source.target_entity_id,
+            sync_status = source.sync_status,
+            last_synced_at = CURRENT_TIMESTAMP(),
+            updated_at = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN
+          INSERT (
+            sync_target_id,
+            target_system,
+            target_entity_type,
+            target_entity_id,
+            source_record_type,
+            source_record_id,
+            sync_status,
+            last_synced_at,
+            created_at,
+            updated_at
+          )
+          VALUES (
+            GENERATE_UUID(),
+            source.target_system,
+            source.target_entity_type,
+            source.target_entity_id,
+            source.source_record_type,
+            source.source_record_id,
+            source.sync_status,
+            CURRENT_TIMESTAMP(),
+            CURRENT_TIMESTAMP(),
+            CURRENT_TIMESTAMP()
+          )
+        """
+        self.repository.execute_statement(query)
+
+    def _escape_sql_literal(self, value: str) -> str:
+        """Escape a value for direct interpolation into BigQuery string literals."""
+
+        return (
+            str(value)
+            .replace("\\", "\\\\")
+            .replace("'", "\\'")
+            .replace("\r", "\\r")
+            .replace("\n", "\\n")
+        )
 
     def _ensure_custom_fields(self, list_id: str, dry_run: bool) -> dict[str, str]:
         """Ensure required custom fields exist on the Campaign Monitor list."""
