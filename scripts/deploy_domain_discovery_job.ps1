@@ -9,7 +9,7 @@ param(
     [string]$VpcEgress = "private-ranges-only",
     [int]$DomainDiscoveryBatchSize = 5,
     [int]$DomainDiscoveryQueryBatchSize = 40,
-    [int]$DomainDiscoveryCooldownHours = 72,
+    [int]$DomainDiscoveryCooldownHours = 4,
     [int]$DomainDiscoveryUsSharePercent = 85,
     [bool]$DomainDiscoveryPromotionEnabled = $true,
     [string]$DomainDiscoveryProviderOrder = "gemini_google_search,duckduckgo_html",
