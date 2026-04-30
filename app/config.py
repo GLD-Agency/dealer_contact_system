@@ -65,6 +65,15 @@ class Settings:
     domain_discovery_vpc_connector: str
     domain_discovery_vpc_egress: str
     domain_discovery_egress_ip: str
+    process_watchdog_enabled: bool
+    process_watchdog_main_stale_hours: int
+    process_watchdog_discovery_stale_hours: int
+    process_watchdog_prospect_leads_stale_hours: int
+    process_watchdog_snapshot_stale_hours: int
+    process_watchdog_campaign_monitor_stale_hours: int
+    process_watchdog_running_grace_minutes: int
+    process_watchdog_job_name: str
+    process_watchdog_scheduler_name: str
     gbp_enrichment_enabled: bool
     gbp_provider: str
     gbp_search_endpoint: str
@@ -88,6 +97,7 @@ class Settings:
     openai_api_key: str | None
     openai_model: str
     cloud_run_region: str
+    cloud_run_job_name: str
     request_timeout_seconds: int
     browser_timeout_seconds: int
     blocked_retry_short_cooldown_hours: int
@@ -307,6 +317,15 @@ def get_settings() -> Settings:
         domain_discovery_vpc_connector=os.getenv("DOMAIN_DISCOVERY_VPC_CONNECTOR", "dealer-discovery-conn"),
         domain_discovery_vpc_egress=os.getenv("DOMAIN_DISCOVERY_VPC_EGRESS", "all-traffic"),
         domain_discovery_egress_ip=os.getenv("DOMAIN_DISCOVERY_EGRESS_IP", "34.45.226.9"),
+        process_watchdog_enabled=os.getenv("PROCESS_WATCHDOG_ENABLED", "true").lower() == "true",
+        process_watchdog_main_stale_hours=int(os.getenv("PROCESS_WATCHDOG_MAIN_STALE_HOURS", "6")),
+        process_watchdog_discovery_stale_hours=int(os.getenv("PROCESS_WATCHDOG_DISCOVERY_STALE_HOURS", "6")),
+        process_watchdog_prospect_leads_stale_hours=int(os.getenv("PROCESS_WATCHDOG_PROSPECT_LEADS_STALE_HOURS", "6")),
+        process_watchdog_snapshot_stale_hours=int(os.getenv("PROCESS_WATCHDOG_SNAPSHOT_STALE_HOURS", "8")),
+        process_watchdog_campaign_monitor_stale_hours=int(os.getenv("PROCESS_WATCHDOG_CAMPAIGN_MONITOR_STALE_HOURS", "8")),
+        process_watchdog_running_grace_minutes=int(os.getenv("PROCESS_WATCHDOG_RUNNING_GRACE_MINUTES", "90")),
+        process_watchdog_job_name=os.getenv("PROCESS_WATCHDOG_JOB_NAME", "dealer-process-watchdog"),
+        process_watchdog_scheduler_name=os.getenv("PROCESS_WATCHDOG_SCHEDULER_NAME", "dealer-process-watchdog-schedule"),
         gbp_enrichment_enabled=os.getenv("GBP_ENRICHMENT_ENABLED", "true").lower() == "true",
         gbp_provider=os.getenv("GBP_PROVIDER", "duckduckgo_search_fallback"),
         gbp_search_endpoint=os.getenv("GBP_SEARCH_ENDPOINT", "https://html.duckduckgo.com/html/"),
@@ -330,6 +349,7 @@ def get_settings() -> Settings:
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-5.4"),
         cloud_run_region=os.getenv("CLOUD_RUN_REGION", "us-central1"),
+        cloud_run_job_name=os.getenv("CLOUD_RUN_JOB_NAME", "dealer-contact-worker"),
         request_timeout_seconds=int(os.getenv("REQUEST_TIMEOUT_SECONDS", "12")),
         browser_timeout_seconds=int(os.getenv("BROWSER_TIMEOUT_SECONDS", "30")),
         blocked_retry_short_cooldown_hours=int(os.getenv("BLOCKED_RETRY_SHORT_COOLDOWN_HOURS", "6")),

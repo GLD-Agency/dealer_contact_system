@@ -26,6 +26,7 @@ from app.services.gbp_enrichment import GbpEnrichmentService
 from app.services.low_risk_enrichment import LowRiskEnrichmentService
 from app.services.managed_fetch import ManagedFetchService
 from app.services.normalization import NormalizationService
+from app.services.process_watchdog import ProcessWatchdogService
 from app.services.prospect_leads import ProspectLeadService
 from app.services.work_queue import TASK_TYPES, WorkQueueService
 
@@ -374,6 +375,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Preview managed-fetch eligibility without writing escalation state.",
     )
+    watchdog_parser = subparsers.add_parser(
+        "run-process-watchdog",
+        help="Check nightly process freshness and auto-restart stale pipeline jobs when needed.",
+    )
+    watchdog_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview watchdog actions without refreshing materializations or triggering Cloud Run jobs.",
+    )
 
     campaign_monitor_parser = subparsers.add_parser(
         "check-campaign-monitor",
@@ -441,6 +451,14 @@ def main() -> None:
     client_dim_service = ClientDimService(repository, settings)
     managed_fetch_service = ManagedFetchService(repository, settings)
     domain_discovery_service = DomainDiscoveryService(repository, settings)
+    process_watchdog_service = ProcessWatchdogService(
+        repository,
+        settings,
+        prospect_lead_service,
+        client_dim_service,
+        dashboard_service,
+        campaign_monitor_service,
+    )
 
     logger.info(
         "Starting command | environment=%s | project=%s | dataset=%s | command=%s",
@@ -745,6 +763,19 @@ def main() -> None:
         print(f"Managed fetch status: {result.status}")
         print(result.detail)
         print(f"Eligible accounts: {result.eligible_accounts}")
+        return
+
+    if args.command == "run-process-watchdog":
+        schema_manager.ensure_tables()
+        result = process_watchdog_service.run(dry_run=args.dry_run)
+        logger.info("Process watchdog complete | status=%s | detail=%s", result.status, result.detail)
+        print(f"Process watchdog status: {result.status}")
+        print(result.detail)
+        print(f"Main job triggered: {result.main_job_triggered}")
+        print(f"Discovery job triggered: {result.discovery_job_triggered}")
+        print(f"Materializations repaired: {result.repaired_materializations}")
+        for check in result.checks:
+            print(f"- {check.name}: {check.status} | {check.detail} | action={check.action}")
         return
 
     if args.command == "check-campaign-monitor":

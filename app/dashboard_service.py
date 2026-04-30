@@ -760,7 +760,9 @@ class DashboardService:
     def _get_connections(self, overview: dict[str, Any]) -> list[DashboardConnectionStatus]:
         """Create human-readable system health rows."""
 
-        system_statuses = self._get_named_system_statuses(("client_dim", "managed_fetch", "gbp_enrichment", "ai_retrieval"))
+        system_statuses = self._get_named_system_statuses(
+            ("client_dim", "managed_fetch", "gbp_enrichment", "ai_retrieval", "process_watchdog")
+        )
         discovery_overview = self._get_discovery_overview()
         ai_configured = bool(
             (self.settings.gemini_enabled and self.settings.gemini_api_key)
@@ -824,6 +826,16 @@ class DashboardService:
                 sync_row=system_statuses.get("ai_retrieval"),
                 fallback_status="healthy" if self.settings.ai_retrieval_enabled and ai_configured else "warning",
                 fallback_detail=self._build_ai_connection_detail(overview),
+            ),
+            self._system_status_row(
+                name="Process Watchdog",
+                sync_row=system_statuses.get("process_watchdog"),
+                fallback_status="warning" if self.settings.process_watchdog_enabled else "healthy",
+                fallback_detail=(
+                    "Nightly watchdog has not reported yet."
+                    if self.settings.process_watchdog_enabled
+                    else "Nightly watchdog is disabled."
+                ),
             ),
         ]
 
