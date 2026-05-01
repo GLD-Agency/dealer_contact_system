@@ -13,6 +13,17 @@ param(
     [int]$RetryBlockedBatchSize = 10,
     [int]$CampaignMonitorSyncBatchSize = 1000,
     [bool]$CampaignMonitorSyncEnabled = $true,
+    [bool]$AiRetrievalEnabled = $true,
+    [string]$AiRetrievalProviderOrder = "gemini,openai",
+    [int]$AiRetrievalMinRunIntervalMinutes = 30,
+    [int]$AiRetrievalCooldownHours = 72,
+    [int]$AiRetrievalRateLimitCooldownMinutes = 180,
+    [double]$AiRetrievalRequestDelaySeconds = 2,
+    [string]$AiRetrievalPromptStyle = "simple_staff",
+    [bool]$GeminiEnabled = $true,
+    [string]$GeminiModel = "gemini-2.5-flash",
+    [bool]$OpenAiEnabled = $false,
+    [string]$OpenAiModel = "gpt-5.4",
     [string]$CampaignMonitorApiKeySecret = "campaign-monitor-api-key:latest",
     [string]$CampaignMonitorClientIdSecret = "campaign-monitor-client-id:latest",
     [string]$GeminiApiKeySecret = "gemini-api-key:latest",
@@ -34,10 +45,21 @@ $envVars = @(
     "ENRICH_WORKER_BATCH_SIZE=$EnrichBatchSize",
     "GBP_WORKER_BATCH_SIZE=$GbpBatchSize",
     "AI_RETRIEVAL_BATCH_SIZE=$AiRetrievalBatchSize",
+    "AI_RETRIEVAL_ENABLED=$($AiRetrievalEnabled.ToString().ToLower())",
+    "AI_RETRIEVAL_PROVIDER_ORDER=$AiRetrievalProviderOrder",
+    "AI_RETRIEVAL_MIN_RUN_INTERVAL_MINUTES=$AiRetrievalMinRunIntervalMinutes",
+    "AI_RETRIEVAL_COOLDOWN_HOURS=$AiRetrievalCooldownHours",
+    "AI_RETRIEVAL_RATE_LIMIT_COOLDOWN_MINUTES=$AiRetrievalRateLimitCooldownMinutes",
+    "AI_RETRIEVAL_REQUEST_DELAY_SECONDS=$AiRetrievalRequestDelaySeconds",
+    "AI_RETRIEVAL_PROMPT_STYLE=$AiRetrievalPromptStyle",
     "EXTRACT_WORKER_BATCH_SIZE=$ExtractBatchSize",
     "RETRY_BLOCKED_WORKER_BATCH_SIZE=$RetryBlockedBatchSize",
     "CAMPAIGN_MONITOR_SYNC_BATCH_SIZE=$CampaignMonitorSyncBatchSize",
-    "CAMPAIGN_MONITOR_SYNC_ENABLED=$($CampaignMonitorSyncEnabled.ToString().ToLower())"
+    "CAMPAIGN_MONITOR_SYNC_ENABLED=$($CampaignMonitorSyncEnabled.ToString().ToLower())",
+    "GEMINI_ENABLED=$($GeminiEnabled.ToString().ToLower())",
+    "GEMINI_MODEL=$GeminiModel",
+    "OPENAI_ENABLED=$($OpenAiEnabled.ToString().ToLower())",
+    "OPENAI_MODEL=$OpenAiModel"
 )
 
 if ($env:CAMPAIGN_MONITOR_MASTER_LIST_NAME) {
@@ -73,41 +95,14 @@ if ($env:CLIENT_DIM_DATASET) {
 if ($env:CLIENT_DIM_TABLE) {
     $envVars += "CLIENT_DIM_TABLE=$($env:CLIENT_DIM_TABLE)"
 }
-if ($env:AI_RETRIEVAL_ENABLED) {
-    $envVars += "AI_RETRIEVAL_ENABLED=$($env:AI_RETRIEVAL_ENABLED)"
-}
 if ($env:AI_RETRIEVAL_PROVIDER_ORDER) {
     $envVars += "AI_RETRIEVAL_PROVIDER_ORDER=$($env:AI_RETRIEVAL_PROVIDER_ORDER)"
-}
-if ($env:AI_RETRIEVAL_MIN_RUN_INTERVAL_MINUTES) {
-    $envVars += "AI_RETRIEVAL_MIN_RUN_INTERVAL_MINUTES=$($env:AI_RETRIEVAL_MIN_RUN_INTERVAL_MINUTES)"
-}
-if ($env:AI_RETRIEVAL_COOLDOWN_HOURS) {
-    $envVars += "AI_RETRIEVAL_COOLDOWN_HOURS=$($env:AI_RETRIEVAL_COOLDOWN_HOURS)"
-}
-if ($env:AI_RETRIEVAL_RATE_LIMIT_COOLDOWN_MINUTES) {
-    $envVars += "AI_RETRIEVAL_RATE_LIMIT_COOLDOWN_MINUTES=$($env:AI_RETRIEVAL_RATE_LIMIT_COOLDOWN_MINUTES)"
-}
-if ($env:AI_RETRIEVAL_REQUEST_DELAY_SECONDS) {
-    $envVars += "AI_RETRIEVAL_REQUEST_DELAY_SECONDS=$($env:AI_RETRIEVAL_REQUEST_DELAY_SECONDS)"
 }
 if ($env:AI_RETRIEVAL_PROMPT_STYLE) {
     $envVars += "AI_RETRIEVAL_PROMPT_STYLE=$($env:AI_RETRIEVAL_PROMPT_STYLE)"
 }
-if ($env:GEMINI_ENABLED) {
-    $envVars += "GEMINI_ENABLED=$($env:GEMINI_ENABLED)"
-}
-if ($env:GEMINI_MODEL) {
-    $envVars += "GEMINI_MODEL=$($env:GEMINI_MODEL)"
-}
-if ($env:OPENAI_ENABLED) {
-    $envVars += "OPENAI_ENABLED=$($env:OPENAI_ENABLED)"
-}
 if ($env:OPENAI_API_KEY) {
     $envVars += "OPENAI_API_KEY=$($env:OPENAI_API_KEY)"
-}
-if ($env:OPENAI_MODEL) {
-    $envVars += "OPENAI_MODEL=$($env:OPENAI_MODEL)"
 }
 
 $envVarMap = @{}

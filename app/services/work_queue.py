@@ -534,6 +534,7 @@ class WorkQueueService:
     ) -> list[dict[str, str]]:
         """Lease a batch of queue rows to this worker."""
 
+        task_specific_eligibility_sql = self._claim_eligibility_sql(task_type)
         update_query = f"""
         UPDATE `{self.settings.account_work_queue_table_fqn}`
         SET
@@ -550,6 +551,7 @@ class WorkQueueService:
             AND status IN ('pending', 'retry')
             AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP())
             AND (lease_expires_at IS NULL OR lease_expires_at <= CURRENT_TIMESTAMP())
+            {task_specific_eligibility_sql}
           ORDER BY priority DESC, created_at ASC
           LIMIT {batch_size}
         )
@@ -565,6 +567,24 @@ class WorkQueueService:
         ORDER BY priority DESC, created_at ASC
         """
         return [dict(row.items()) for row in self.repository.run_query(fetch_query)]
+
+    def _claim_eligibility_sql(self, task_type: str) -> str:
+        """Return extra claim-time eligibility filters for special queue types."""
+
+        if task_type != TASK_AI_ACCOUNT_FACTS:
+            return ""
+
+        return f"""
+            AND account_key IN (
+              SELECT account_key
+              FROM `{self.settings.dealer_accounts_table_fqn}`
+              WHERE dealer_classification IN ('dealer', 'dealer_group')
+                AND (
+                  next_ai_retrieval_at IS NULL
+                  OR next_ai_retrieval_at <= CURRENT_TIMESTAMP()
+                )
+            )
+        """
 
     def _mark_completed(self, task_type: str, account_keys: list[str]) -> None:
         """Mark queue rows complete after a successful worker batch."""
@@ -629,11 +649,13 @@ class WorkQueueService:
             )
             return
         if task_type == TASK_AI_ACCOUNT_FACTS:
-            self.ai_retrieval.refresh_account_facts(
+            result = self.ai_retrieval.refresh_account_facts(
                 dry_run=False,
                 limit=limit,
                 account_keys=account_keys,
             )
+            if result.status in {"warning", "failed"}:
+                raise RuntimeError(result.detail)
             return
         if task_type == TASK_EXTRACT_CONTACTS:
             self.contact_extraction.extract(
