@@ -27,6 +27,14 @@ class Settings:
     account_relationships_table: str
     sync_targets_table: str
     account_work_queue_table: str
+    validate_queue_table: str
+    crawl_queue_table: str
+    gbp_queue_table: str
+    ai_queue_table: str
+    contact_extract_queue_table: str
+    blocked_retry_queue_table: str
+    lead_refresh_queue_table: str
+    lane_execution_state_table: str
     pipeline_runs_table: str
     domain_discovery_queue_table: str
     domain_discovery_runs_table: str
@@ -51,6 +59,8 @@ class Settings:
     retry_blocked_worker_batch_size: int
     campaign_monitor_sync_batch_size: int
     campaign_monitor_sync_enabled: bool
+    parallel_enrichment_enabled: bool
+    queue_manager_enabled: bool
     domain_discovery_enabled: bool
     domain_discovery_batch_size: int
     domain_discovery_query_batch_size: int
@@ -74,6 +84,22 @@ class Settings:
     process_watchdog_running_grace_minutes: int
     process_watchdog_job_name: str
     process_watchdog_scheduler_name: str
+    queue_manager_job_name: str
+    queue_manager_scheduler_name: str
+    validate_job_name: str
+    validate_scheduler_name: str
+    crawl_job_name: str
+    crawl_scheduler_name: str
+    gbp_job_name: str
+    gbp_scheduler_name: str
+    ai_job_name: str
+    ai_scheduler_name: str
+    contact_extract_job_name: str
+    contact_extract_scheduler_name: str
+    blocked_retry_job_name: str
+    blocked_retry_scheduler_name: str
+    lead_refresh_job_name: str
+    lead_refresh_scheduler_name: str
     gbp_enrichment_enabled: bool
     gbp_provider: str
     gbp_search_endpoint: str
@@ -161,6 +187,54 @@ class Settings:
         """Return the fully qualified account work queue table name."""
 
         return self.table_fqn(self.account_work_queue_table)
+
+    @property
+    def validate_queue_table_fqn(self) -> str:
+        """Return the fully qualified validate queue table name."""
+
+        return self.table_fqn(self.validate_queue_table)
+
+    @property
+    def crawl_queue_table_fqn(self) -> str:
+        """Return the fully qualified crawl queue table name."""
+
+        return self.table_fqn(self.crawl_queue_table)
+
+    @property
+    def gbp_queue_table_fqn(self) -> str:
+        """Return the fully qualified GBP queue table name."""
+
+        return self.table_fqn(self.gbp_queue_table)
+
+    @property
+    def ai_queue_table_fqn(self) -> str:
+        """Return the fully qualified AI queue table name."""
+
+        return self.table_fqn(self.ai_queue_table)
+
+    @property
+    def contact_extract_queue_table_fqn(self) -> str:
+        """Return the fully qualified contact extraction queue table name."""
+
+        return self.table_fqn(self.contact_extract_queue_table)
+
+    @property
+    def blocked_retry_queue_table_fqn(self) -> str:
+        """Return the fully qualified blocked retry queue table name."""
+
+        return self.table_fqn(self.blocked_retry_queue_table)
+
+    @property
+    def lead_refresh_queue_table_fqn(self) -> str:
+        """Return the fully qualified lead refresh queue table name."""
+
+        return self.table_fqn(self.lead_refresh_queue_table)
+
+    @property
+    def lane_execution_state_table_fqn(self) -> str:
+        """Return the fully qualified lane execution state table name."""
+
+        return self.table_fqn(self.lane_execution_state_table)
 
     @property
     def pipeline_runs_table_fqn(self) -> str:
@@ -264,6 +338,14 @@ def get_settings() -> Settings:
         ),
         sync_targets_table=os.getenv("SYNC_TARGETS_TABLE", "sync_targets"),
         account_work_queue_table=os.getenv("ACCOUNT_WORK_QUEUE_TABLE", "account_work_queue"),
+        validate_queue_table=os.getenv("VALIDATE_QUEUE_TABLE", "validate_queue"),
+        crawl_queue_table=os.getenv("CRAWL_QUEUE_TABLE", "crawl_queue"),
+        gbp_queue_table=os.getenv("GBP_QUEUE_TABLE", "gbp_queue"),
+        ai_queue_table=os.getenv("AI_QUEUE_TABLE", "ai_queue"),
+        contact_extract_queue_table=os.getenv("CONTACT_EXTRACT_QUEUE_TABLE", "contact_extract_queue"),
+        blocked_retry_queue_table=os.getenv("BLOCKED_RETRY_QUEUE_TABLE", "blocked_retry_queue"),
+        lead_refresh_queue_table=os.getenv("LEAD_REFRESH_QUEUE_TABLE", "lead_refresh_queue"),
+        lane_execution_state_table=os.getenv("LANE_EXECUTION_STATE_TABLE", "lane_execution_state"),
         pipeline_runs_table=os.getenv("PIPELINE_RUNS_TABLE", "pipeline_runs"),
         domain_discovery_queue_table=os.getenv("DOMAIN_DISCOVERY_QUEUE_TABLE", "domain_discovery_queue"),
         domain_discovery_runs_table=os.getenv("DOMAIN_DISCOVERY_RUNS_TABLE", "domain_discovery_runs"),
@@ -297,6 +379,8 @@ def get_settings() -> Settings:
         retry_blocked_worker_batch_size=int(os.getenv("RETRY_BLOCKED_WORKER_BATCH_SIZE", "10")),
         campaign_monitor_sync_batch_size=int(os.getenv("CAMPAIGN_MONITOR_SYNC_BATCH_SIZE", "1000")),
         campaign_monitor_sync_enabled=os.getenv("CAMPAIGN_MONITOR_SYNC_ENABLED", "false").lower() == "true",
+        parallel_enrichment_enabled=os.getenv("PARALLEL_ENRICHMENT_ENABLED", "true").lower() == "true",
+        queue_manager_enabled=os.getenv("QUEUE_MANAGER_ENABLED", "true").lower() == "true",
         domain_discovery_enabled=os.getenv("DOMAIN_DISCOVERY_ENABLED", "true").lower() == "true",
         domain_discovery_batch_size=int(os.getenv("DOMAIN_DISCOVERY_BATCH_SIZE", "5")),
         domain_discovery_query_batch_size=int(os.getenv("DOMAIN_DISCOVERY_QUERY_BATCH_SIZE", "40")),
@@ -326,6 +410,28 @@ def get_settings() -> Settings:
         process_watchdog_running_grace_minutes=int(os.getenv("PROCESS_WATCHDOG_RUNNING_GRACE_MINUTES", "90")),
         process_watchdog_job_name=os.getenv("PROCESS_WATCHDOG_JOB_NAME", "dealer-process-watchdog"),
         process_watchdog_scheduler_name=os.getenv("PROCESS_WATCHDOG_SCHEDULER_NAME", "dealer-process-watchdog-schedule"),
+        queue_manager_job_name=os.getenv("QUEUE_MANAGER_JOB_NAME", "dealer-queue-manager"),
+        queue_manager_scheduler_name=os.getenv("QUEUE_MANAGER_SCHEDULER_NAME", "dealer-queue-manager-schedule"),
+        validate_job_name=os.getenv("VALIDATE_JOB_NAME", "dealer-validate-worker"),
+        validate_scheduler_name=os.getenv("VALIDATE_SCHEDULER_NAME", "dealer-validate-worker-schedule"),
+        crawl_job_name=os.getenv("CRAWL_JOB_NAME", "dealer-crawl-worker"),
+        crawl_scheduler_name=os.getenv("CRAWL_SCHEDULER_NAME", "dealer-crawl-worker-schedule"),
+        gbp_job_name=os.getenv("GBP_JOB_NAME", "dealer-gbp-worker"),
+        gbp_scheduler_name=os.getenv("GBP_SCHEDULER_NAME", "dealer-gbp-worker-schedule"),
+        ai_job_name=os.getenv("AI_JOB_NAME", "dealer-ai-worker"),
+        ai_scheduler_name=os.getenv("AI_SCHEDULER_NAME", "dealer-ai-worker-schedule"),
+        contact_extract_job_name=os.getenv("CONTACT_EXTRACT_JOB_NAME", "dealer-contact-extract-worker"),
+        contact_extract_scheduler_name=os.getenv(
+            "CONTACT_EXTRACT_SCHEDULER_NAME",
+            "dealer-contact-extract-worker-schedule",
+        ),
+        blocked_retry_job_name=os.getenv("BLOCKED_RETRY_JOB_NAME", "dealer-blocked-retry-worker"),
+        blocked_retry_scheduler_name=os.getenv(
+            "BLOCKED_RETRY_SCHEDULER_NAME",
+            "dealer-blocked-retry-worker-schedule",
+        ),
+        lead_refresh_job_name=os.getenv("LEAD_REFRESH_JOB_NAME", "dealer-lead-refresh-worker"),
+        lead_refresh_scheduler_name=os.getenv("LEAD_REFRESH_SCHEDULER_NAME", "dealer-lead-refresh-worker-schedule"),
         gbp_enrichment_enabled=os.getenv("GBP_ENRICHMENT_ENABLED", "true").lower() == "true",
         gbp_provider=os.getenv("GBP_PROVIDER", "duckduckgo_search_fallback"),
         gbp_search_endpoint=os.getenv("GBP_SEARCH_ENDPOINT", "https://html.duckduckgo.com/html/"),

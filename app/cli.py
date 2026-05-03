@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 
 from app.bigquery_client import get_bigquery_client
 from app.bigquery_repository import BigQueryRepository
@@ -28,6 +29,18 @@ from app.services.managed_fetch import ManagedFetchService
 from app.services.normalization import NormalizationService
 from app.services.process_watchdog import ProcessWatchdogService
 from app.services.prospect_leads import ProspectLeadService
+from app.services.parallel_enrichment import (
+    LANE_AI,
+    LANE_BLOCKED_RETRY,
+    LANE_CONTACT_EXTRACT,
+    LANE_CRAWL,
+    LANE_GBP,
+    LANE_LEAD_REFRESH,
+    LANE_VALIDATE,
+    LANES,
+    ParallelLaneManagerService,
+    ParallelLaneWorkerService,
+)
 from app.services.work_queue import TASK_TYPES, WorkQueueService
 
 
@@ -232,6 +245,54 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="Preview the discovery cycle without processing queued tasks or promotions.",
+    )
+    lane_worker_parser = subparsers.add_parser(
+        "run-lane-worker",
+        help="Run one parallel enrichment lane worker against its dedicated queue.",
+    )
+    lane_worker_parser.add_argument(
+        "--lane",
+        choices=list(LANES),
+        required=True,
+        help="Lane name to process.",
+    )
+    lane_worker_parser.add_argument(
+        "--seed",
+        action="store_true",
+        help="Seed the lane queue before claiming work.",
+    )
+    lane_worker_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview the lane worker without processing queue items.",
+    )
+    lane_seed_parser = subparsers.add_parser(
+        "seed-lane-queues",
+        help="Seed one or all parallel enrichment lane queues from canonical state.",
+    )
+    lane_seed_parser.add_argument(
+        "--lane",
+        choices=["all", *LANES],
+        default="all",
+        help="Lane queue to seed.",
+    )
+    lane_seed_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview seed counts without writing queue rows.",
+    )
+    lane_manager_parser = subparsers.add_parser(
+        "run-lane-manager",
+        help="Run the parallel lane manager safety-net seed and cutover audit.",
+    )
+    lane_manager_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview lane manager actions without mutating queue state.",
+    )
+    parallel_setup_parser = subparsers.add_parser(
+        "setup-parallel-enrichment",
+        help="Create only the distributed-worker queue and lane-state tables.",
     )
 
     discovery_promote_parser = subparsers.add_parser(
@@ -451,6 +512,8 @@ def main() -> None:
     client_dim_service = ClientDimService(repository, settings)
     managed_fetch_service = ManagedFetchService(repository, settings)
     domain_discovery_service = DomainDiscoveryService(repository, settings)
+    parallel_lane_manager = ParallelLaneManagerService(repository, settings)
+    parallel_lane_worker = ParallelLaneWorkerService(repository, settings)
     process_watchdog_service = ProcessWatchdogService(
         repository,
         settings,
@@ -610,6 +673,41 @@ def main() -> None:
         print(f"Candidates written: {result.candidates_written}")
         print(f"Promoted candidates: {result.promoted_candidates}")
         logger.info("Domain discovery cycle command complete.")
+        return
+
+    if args.command == "seed-lane-queues":
+        if args.lane == "all":
+            counts = parallel_lane_manager.seed_all(dry_run=args.dry_run)
+            print(json.dumps(counts, indent=2, sort_keys=True))
+        else:
+            count = parallel_lane_manager.seed_lane(args.lane, dry_run=args.dry_run)
+            print(f"{args.lane}: {count}")
+        logger.info("Lane queue seed command complete.")
+        return
+
+    if args.command == "run-lane-manager":
+        result = parallel_lane_manager.run_manager(dry_run=args.dry_run)
+        logger.info("Lane manager complete | status=%s | detail=%s", result.status, result.detail)
+        print(f"Lane manager status: {result.status}")
+        print(result.detail)
+        print(json.dumps(result.seeded_counts, indent=2, sort_keys=True))
+        print(f"Duplicate active items: {result.duplicate_active_items}")
+        return
+
+    if args.command == "run-lane-worker":
+        result = parallel_lane_worker.run_lane(lane=args.lane, dry_run=args.dry_run, seed=args.seed)
+        logger.info("Lane worker complete | lane=%s | status=%s | detail=%s", args.lane, result["status"], result["detail"])
+        print(f"Lane worker status: {result['status']}")
+        print(result["detail"])
+        print(f"Lane: {result['lane']}")
+        print(f"Claimed: {result['claimed_count']}")
+        print(f"Succeeded: {result['succeeded_count']}")
+        print(f"Failed: {result['failed_count']}")
+        return
+
+    if args.command == "setup-parallel-enrichment":
+        schema_manager.ensure_parallel_worker_tables()
+        logger.info("Parallel enrichment table setup complete.")
         return
 
     if args.command == "promote-discovered-domains":

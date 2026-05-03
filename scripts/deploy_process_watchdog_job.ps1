@@ -12,10 +12,20 @@ param(
     [int]$CampaignMonitorStaleHours = 8,
     [int]$RunningGraceMinutes = 90,
     [bool]$CampaignMonitorSyncEnabled = $true,
+    [bool]$ParallelEnrichmentEnabled = $true,
+    [bool]$QueueManagerEnabled = $true,
     [bool]$ClientDimEnabled = $true,
     [string]$GldAccountabilityProjectId = "productivity-project-491503",
     [string]$ClientDimDataset = "accountability_v1",
     [string]$ClientDimTable = "dim_clients",
+    [string]$QueueManagerJobName = "dealer-queue-manager",
+    [string]$ValidateJobName = "dealer-validate-worker",
+    [string]$CrawlJobName = "dealer-crawl-worker",
+    [string]$GbpJobName = "dealer-gbp-worker",
+    [string]$AiJobName = "dealer-ai-worker",
+    [string]$ContactExtractJobName = "dealer-contact-extract-worker",
+    [string]$BlockedRetryJobName = "dealer-blocked-retry-worker",
+    [string]$LeadRefreshJobName = "dealer-lead-refresh-worker",
     [int]$TaskTimeoutSeconds = 900
 )
 
@@ -33,6 +43,8 @@ $envVars = @(
     "CLOUD_RUN_JOB_NAME=dealer-contact-worker",
     "DOMAIN_DISCOVERY_JOB_NAME=dealer-domain-discovery-worker",
     "PROCESS_WATCHDOG_ENABLED=true",
+    "PARALLEL_ENRICHMENT_ENABLED=$($ParallelEnrichmentEnabled.ToString().ToLower())",
+    "QUEUE_MANAGER_ENABLED=$($QueueManagerEnabled.ToString().ToLower())",
     "PROCESS_WATCHDOG_MAIN_STALE_HOURS=$MainStaleHours",
     "PROCESS_WATCHDOG_DISCOVERY_STALE_HOURS=$DiscoveryStaleHours",
     "PROCESS_WATCHDOG_PROSPECT_LEADS_STALE_HOURS=$ProspectLeadsStaleHours",
@@ -43,7 +55,15 @@ $envVars = @(
     "CLIENT_DIM_ENABLED=$($ClientDimEnabled.ToString().ToLower())",
     "GLD_ACCOUNTABILITY_PROJECT_ID=$GldAccountabilityProjectId",
     "CLIENT_DIM_DATASET=$ClientDimDataset",
-    "CLIENT_DIM_TABLE=$ClientDimTable"
+    "CLIENT_DIM_TABLE=$ClientDimTable",
+    "QUEUE_MANAGER_JOB_NAME=$QueueManagerJobName",
+    "VALIDATE_JOB_NAME=$ValidateJobName",
+    "CRAWL_JOB_NAME=$CrawlJobName",
+    "GBP_JOB_NAME=$GbpJobName",
+    "AI_JOB_NAME=$AiJobName",
+    "CONTACT_EXTRACT_JOB_NAME=$ContactExtractJobName",
+    "BLOCKED_RETRY_JOB_NAME=$BlockedRetryJobName",
+    "LEAD_REFRESH_JOB_NAME=$LeadRefreshJobName"
 )
 
 $envVarMap = @{}

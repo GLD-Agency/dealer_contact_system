@@ -110,6 +110,15 @@ class ProcessWatchdogService:
             main_job_triggered = False
             discovery_job_triggered = False
             repaired_materializations = False
+            lane_restart_specs = (
+                ("validate", "Validate", self.settings.validate_job_name),
+                ("crawl", "Crawl", self.settings.crawl_job_name),
+                ("gbp", "GBP Enrichment", self.settings.gbp_job_name),
+                ("ai", "AI Retrieval", self.settings.ai_job_name),
+                ("contact_extract", "Contact Extraction", self.settings.contact_extract_job_name),
+                ("blocked_retry", "Blocked Retry", self.settings.blocked_retry_job_name),
+                ("lead_refresh", "Lead Refresh", self.settings.lead_refresh_job_name),
+            ) if self.settings.parallel_enrichment_enabled else tuple()
 
             health_rows = {
                 row["lane_key"]: row
@@ -122,12 +131,32 @@ class ProcessWatchdogService:
             )
             checks.append(main_check)
 
+            lane_check_indexes: dict[str, int] = {}
+            for lane_key, lane_label, _job_name in lane_restart_specs:
+                lane_check_indexes[lane_key] = len(checks)
+                checks.append(
+                    self._process_row_to_check(
+                        health_rows.get(lane_key),
+                        fallback_name=lane_label,
+                        fallback_detail=f"{lane_label} health data is unavailable.",
+                    )
+                )
+
             discovery_check = self._process_row_to_check(
                 health_rows.get("discovery_search"),
                 fallback_name="Discovery Worker",
                 fallback_detail="Discovery worker health data is unavailable.",
             )
             checks.append(discovery_check)
+
+            queue_manager_check = self._check_system_target(
+                target_system="parallel_cutover",
+                name="Queue Manager",
+                stale_hours=self.settings.process_watchdog_main_stale_hours,
+                disabled_detail="Queue manager is disabled.",
+                enabled=self.settings.queue_manager_enabled,
+            )
+            checks.append(queue_manager_check)
 
             prospect_check = self._process_row_to_check(
                 health_rows.get("prospect_lead_refresh"),
@@ -188,7 +217,24 @@ class ProcessWatchdogService:
                         action="captured_dashboard_snapshot",
                     )
 
-            if main_check.status in {"stale", "failed"}:
+            if self.settings.parallel_enrichment_enabled:
+                for lane_key, _lane_label, job_name in lane_restart_specs:
+                    lane_index = lane_check_indexes[lane_key]
+                    lane_check = checks[lane_index]
+                    if lane_check.status not in {"stale", "failed"}:
+                        continue
+                    if dry_run:
+                        checks[lane_index] = WatchdogCheck(lane_check.name, lane_check.status, lane_check.detail, action="dry_run")
+                    else:
+                        self._job_launcher_instance().execute_job(job_name)
+                        main_job_triggered = True
+                        checks[lane_index] = WatchdogCheck(
+                            lane_check.name,
+                            "restarted",
+                            lane_check.detail,
+                            action=f"executed_{job_name}",
+                        )
+            elif main_check.status in {"stale", "failed"}:
                 if dry_run:
                     checks[0] = WatchdogCheck(main_check.name, main_check.status, main_check.detail, action="dry_run")
                 else:
@@ -212,6 +258,18 @@ class ProcessWatchdogService:
                         "restarted",
                         discovery_check.detail,
                         action=f"executed_{self.settings.domain_discovery_job_name}",
+                    )
+
+            if queue_manager_check.status in {"stale", "failed"}:
+                if dry_run:
+                    checks[2] = WatchdogCheck(queue_manager_check.name, queue_manager_check.status, queue_manager_check.detail, action="dry_run")
+                else:
+                    self._job_launcher_instance().execute_job(self.settings.queue_manager_job_name)
+                    checks[2] = WatchdogCheck(
+                        queue_manager_check.name,
+                        "restarted",
+                        queue_manager_check.detail,
+                        action=f"executed_{self.settings.queue_manager_job_name}",
                     )
 
             if campaign_monitor_check.status in {"stale", "failed"} and self.settings.campaign_monitor_sync_enabled:
@@ -391,6 +449,35 @@ class ProcessWatchdogService:
                 "Campaign Monitor has not recorded a fresh sync within the expected window.",
             )
         return WatchdogCheck("Campaign Monitor Sync", "healthy", "Campaign Monitor sync activity is current.")
+
+    def _check_system_target(
+        self,
+        *,
+        target_system: str,
+        name: str,
+        stale_hours: int,
+        disabled_detail: str,
+        enabled: bool,
+    ) -> WatchdogCheck:
+        """Return freshness for a sync-target heartbeat-based system row."""
+
+        if not enabled:
+            return WatchdogCheck(name, "healthy", disabled_detail)
+        query = f"""
+        SELECT
+          MAX(last_synced_at) AS last_synced_at,
+          ANY_VALUE(sync_status) AS sync_status
+        FROM `{self.settings.sync_targets_table_fqn}`
+        WHERE target_system = '{self._escape_sql(target_system)}'
+        """
+        row = self.repository.fetch_one(query)
+        last_synced_at = row.get("last_synced_at")
+        sync_status = str(row.get("sync_status") or "").lower()
+        if sync_status in {"failed", "error"}:
+            return WatchdogCheck(name, "failed", f"{name} reported {sync_status}.")
+        if self._is_timestamp_stale(last_synced_at, stale_hours):
+            return WatchdogCheck(name, "stale", f"{name} has not reported recently.")
+        return WatchdogCheck(name, "healthy", f"{name} is reporting within the expected window.")
 
     def _has_recent_running_job(self, timestamp_value: Any) -> bool:
         """Return whether a running job started recently enough to avoid duplicate restarts."""

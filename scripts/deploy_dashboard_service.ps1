@@ -5,6 +5,8 @@ param(
   [string]$ImageName = "dealer-contact-dashboard",
   [string]$ServiceName = "dealer-contact-dashboard",
   [bool]$AiRetrievalEnabled = $true,
+  [bool]$ParallelEnrichmentEnabled = $true,
+  [bool]$QueueManagerEnabled = $true,
   [bool]$DomainDiscoveryEnabled = $true,
   [bool]$ProcessWatchdogEnabled = $true,
   [bool]$GeminiEnabled = $true,
@@ -15,6 +17,14 @@ param(
   [string]$DomainDiscoveryVpcConnector = "dealer-discovery-conn",
   [string]$DomainDiscoveryVpcEgress = "all-traffic",
   [string]$DomainDiscoveryEgressIp = "34.45.226.9",
+  [string]$QueueManagerJobName = "dealer-queue-manager",
+  [string]$ValidateJobName = "dealer-validate-worker",
+  [string]$CrawlJobName = "dealer-crawl-worker",
+  [string]$GbpJobName = "dealer-gbp-worker",
+  [string]$AiJobName = "dealer-ai-worker",
+  [string]$ContactExtractJobName = "dealer-contact-extract-worker",
+  [string]$BlockedRetryJobName = "dealer-blocked-retry-worker",
+  [string]$LeadRefreshJobName = "dealer-lead-refresh-worker",
   [string]$CampaignMonitorApiKeySecret = "campaign-monitor-api-key:latest",
   [string]$CampaignMonitorClientIdSecret = "campaign-monitor-client-id:latest",
   [string]$GeminiApiKeySecret = "gemini-api-key:latest",
@@ -28,6 +38,8 @@ $envVars = @(
   "BIGQUERY_PROJECT_ID=$ProjectId"
   "BIGQUERY_DATASET=dealer_data"
   "AI_RETRIEVAL_ENABLED=$($AiRetrievalEnabled.ToString().ToLower())"
+  "PARALLEL_ENRICHMENT_ENABLED=$($ParallelEnrichmentEnabled.ToString().ToLower())"
+  "QUEUE_MANAGER_ENABLED=$($QueueManagerEnabled.ToString().ToLower())"
   "DOMAIN_DISCOVERY_ENABLED=$($DomainDiscoveryEnabled.ToString().ToLower())"
   "PROCESS_WATCHDOG_ENABLED=$($ProcessWatchdogEnabled.ToString().ToLower())"
   "GEMINI_ENABLED=$($GeminiEnabled.ToString().ToLower())"
@@ -38,6 +50,14 @@ $envVars = @(
   "DOMAIN_DISCOVERY_VPC_CONNECTOR=$DomainDiscoveryVpcConnector"
   "DOMAIN_DISCOVERY_VPC_EGRESS=$DomainDiscoveryVpcEgress"
   "DOMAIN_DISCOVERY_EGRESS_IP=$DomainDiscoveryEgressIp"
+  "QUEUE_MANAGER_JOB_NAME=$QueueManagerJobName"
+  "VALIDATE_JOB_NAME=$ValidateJobName"
+  "CRAWL_JOB_NAME=$CrawlJobName"
+  "GBP_JOB_NAME=$GbpJobName"
+  "AI_JOB_NAME=$AiJobName"
+  "CONTACT_EXTRACT_JOB_NAME=$ContactExtractJobName"
+  "BLOCKED_RETRY_JOB_NAME=$BlockedRetryJobName"
+  "LEAD_REFRESH_JOB_NAME=$LeadRefreshJobName"
 )
 
 if ($env:META_ACCESS_TOKEN) {

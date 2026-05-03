@@ -44,6 +44,7 @@ class DashboardService:
             "snapshot_warning": self._build_snapshot_warning(process_health_rows),
             "process_health_rows": process_health_rows,
             "system_health_rows": self._build_system_health_rows(process_health_rows),
+            "cutover_health_rows": self._build_cutover_health_rows(),
             "discovery_overview": self._get_discovery_overview(),
             "discovery_runtime": self._get_discovery_runtime_details(),
             "snapshot_summary": self._build_snapshot_summary(latest_snapshot, previous_snapshot),
@@ -65,101 +66,201 @@ class DashboardService:
     def get_process_health_rows(self) -> list[dict[str, Any]]:
         """Return shared lane-health rows for both the dashboard and watchdog."""
 
-        queue_rollups = self._get_queue_rollups(self.settings.account_work_queue_table_fqn, "task_type")
         run_rollups = self._get_run_rollups(self.settings.pipeline_runs_table_fqn, "task_type")
-        discovery_queue_rollups = self._get_queue_rollups(
-            self.settings.domain_discovery_queue_table_fqn,
-            "'search'",
-        )
-        discovery_run_rollups = self._get_run_rollups(
-            self.settings.domain_discovery_runs_table_fqn,
-            "'search'",
-        )
         sync_rollups = self._get_sync_rollups()
-
-        rows = [
-            self._build_queue_lane_row(
-                lane_key="validate",
-                label="Validate",
-                queue_row=queue_rollups.get("validate"),
-                run_row=run_rollups.get("validate"),
-                stale_hours=self.settings.process_watchdog_main_stale_hours,
-            ),
-            self._build_queue_lane_row(
-                lane_key="enrich",
-                label="Enrich",
-                queue_row=queue_rollups.get("enrich"),
-                run_row=run_rollups.get("enrich"),
-                stale_hours=self.settings.process_watchdog_main_stale_hours,
-            ),
-            self._build_queue_lane_row(
-                lane_key="enrich_gbp",
-                label="GBP Enrichment",
-                queue_row=queue_rollups.get("enrich_gbp"),
-                run_row=run_rollups.get("enrich_gbp"),
-                stale_hours=self.settings.process_watchdog_main_stale_hours,
-            ),
-            self._build_queue_lane_row(
-                lane_key="ai_account_facts",
-                label="AI Retrieval",
-                queue_row=queue_rollups.get("ai_account_facts"),
-                run_row=run_rollups.get("ai_account_facts"),
-                stale_hours=self.settings.process_watchdog_main_stale_hours,
-            ),
-            self._build_queue_lane_row(
-                lane_key="extract_contacts",
-                label="Extract Contacts",
-                queue_row=queue_rollups.get("extract_contacts"),
-                run_row=run_rollups.get("extract_contacts"),
-                stale_hours=self.settings.process_watchdog_main_stale_hours,
-            ),
-            self._build_queue_lane_row(
-                lane_key="retry_blocked",
-                label="Retry Blocked",
-                queue_row=queue_rollups.get("retry_blocked"),
-                run_row=run_rollups.get("retry_blocked"),
-                stale_hours=self.settings.process_watchdog_main_stale_hours,
-            ),
-            self._build_queue_lane_row(
-                lane_key="discovery_search",
-                label="Discovery Search",
-                queue_row=discovery_queue_rollups.get("search"),
-                run_row=discovery_run_rollups.get("search"),
-                stale_hours=self.settings.process_watchdog_discovery_stale_hours,
-            ),
-            self._build_freshness_lane_row(
-                lane_key="prospect_lead_refresh",
-                label="Prospect Lead Refresh",
-                timestamp=self._get_max_timestamp(self.settings.prospect_leads_table_fqn, "updated_at"),
-                stale_hours=self.settings.process_watchdog_prospect_leads_stale_hours,
-                processed_24h=self._count_recent_rows(
-                    self.settings.prospect_leads_table_fqn,
-                    "updated_at",
-                    24,
+        if self.settings.parallel_enrichment_enabled:
+            rows = [
+                self._build_queue_lane_row(
+                    lane_key="validate",
+                    label="Validate",
+                    queue_row=self._get_single_queue_rollup(self.settings.validate_queue_table_fqn, "validate"),
+                    run_row=run_rollups.get("validate"),
+                    stale_hours=self.settings.process_watchdog_main_stale_hours,
                 ),
-                total_count=self._count_rows(self.settings.prospect_leads_table_fqn),
-                detail_prefix="Prospect leads materialization",
-            ),
-            self._build_freshness_lane_row(
-                lane_key="dashboard_snapshot",
-                label="Dashboard Snapshot",
-                timestamp=self._get_max_timestamp(self.settings.dashboard_snapshots_table_fqn, "snapshot_at"),
-                stale_hours=self.settings.process_watchdog_snapshot_stale_hours,
-                processed_24h=self._count_recent_rows(
-                    self.settings.dashboard_snapshots_table_fqn,
-                    "snapshot_at",
-                    24,
+                self._build_queue_lane_row(
+                    lane_key="crawl",
+                    label="Crawl",
+                    queue_row=self._get_single_queue_rollup(self.settings.crawl_queue_table_fqn, "crawl"),
+                    run_row=run_rollups.get("crawl"),
+                    stale_hours=self.settings.process_watchdog_main_stale_hours,
                 ),
-                total_count=self._count_rows(self.settings.dashboard_snapshots_table_fqn),
-                detail_prefix="Dashboard snapshots",
-            ),
-            self._build_sync_lane_row(
-                lane_key="campaign_monitor_sync",
-                label="Campaign Monitor Sync",
-                sync_row=sync_rollups.get("campaign_monitor"),
-                stale_hours=self.settings.process_watchdog_campaign_monitor_stale_hours,
-            ),
-        ]
+                self._build_queue_lane_row(
+                    lane_key="gbp",
+                    label="GBP Enrichment",
+                    queue_row=self._get_single_queue_rollup(self.settings.gbp_queue_table_fqn, "gbp"),
+                    run_row=run_rollups.get("gbp"),
+                    stale_hours=self.settings.process_watchdog_main_stale_hours,
+                ),
+                self._build_queue_lane_row(
+                    lane_key="ai",
+                    label="AI Retrieval",
+                    queue_row=self._get_single_queue_rollup(self.settings.ai_queue_table_fqn, "ai"),
+                    run_row=run_rollups.get("ai"),
+                    stale_hours=self.settings.process_watchdog_main_stale_hours,
+                ),
+                self._build_queue_lane_row(
+                    lane_key="contact_extract",
+                    label="Contact Extraction",
+                    queue_row=self._get_single_queue_rollup(
+                        self.settings.contact_extract_queue_table_fqn,
+                        "contact_extract",
+                    ),
+                    run_row=run_rollups.get("contact_extract"),
+                    stale_hours=self.settings.process_watchdog_main_stale_hours,
+                ),
+                self._build_queue_lane_row(
+                    lane_key="blocked_retry",
+                    label="Blocked Retry",
+                    queue_row=self._get_single_queue_rollup(
+                        self.settings.blocked_retry_queue_table_fqn,
+                        "blocked_retry",
+                    ),
+                    run_row=run_rollups.get("blocked_retry"),
+                    stale_hours=self.settings.process_watchdog_main_stale_hours,
+                ),
+                self._build_queue_lane_row(
+                    lane_key="lead_refresh",
+                    label="Lead Refresh",
+                    queue_row=self._get_single_queue_rollup(self.settings.lead_refresh_queue_table_fqn, "lead_refresh"),
+                    run_row=run_rollups.get("lead_refresh"),
+                    stale_hours=self.settings.process_watchdog_prospect_leads_stale_hours,
+                ),
+                self._build_queue_lane_row(
+                    lane_key="discovery_search",
+                    label="Discovery Search",
+                    queue_row=self._get_single_queue_rollup(
+                        self.settings.domain_discovery_queue_table_fqn,
+                        "search",
+                    ),
+                    run_row=self._get_run_rollups(self.settings.domain_discovery_runs_table_fqn, "'search'").get("search"),
+                    stale_hours=self.settings.process_watchdog_discovery_stale_hours,
+                ),
+                self._build_freshness_lane_row(
+                    lane_key="prospect_lead_refresh",
+                    label="Prospect Lead Materialization",
+                    timestamp=self._get_max_timestamp(self.settings.prospect_leads_table_fqn, "updated_at"),
+                    stale_hours=self.settings.process_watchdog_prospect_leads_stale_hours,
+                    processed_24h=self._count_recent_rows(
+                        self.settings.prospect_leads_table_fqn,
+                        "updated_at",
+                        24,
+                    ),
+                    total_count=self._count_rows(self.settings.prospect_leads_table_fqn),
+                    detail_prefix="Prospect leads materialization",
+                ),
+                self._build_freshness_lane_row(
+                    lane_key="dashboard_snapshot",
+                    label="Dashboard Snapshot",
+                    timestamp=self._get_max_timestamp(self.settings.dashboard_snapshots_table_fqn, "snapshot_at"),
+                    stale_hours=self.settings.process_watchdog_snapshot_stale_hours,
+                    processed_24h=self._count_recent_rows(
+                        self.settings.dashboard_snapshots_table_fqn,
+                        "snapshot_at",
+                        24,
+                    ),
+                    total_count=self._count_rows(self.settings.dashboard_snapshots_table_fqn),
+                    detail_prefix="Dashboard snapshots",
+                ),
+                self._build_sync_lane_row(
+                    lane_key="campaign_monitor_sync",
+                    label="Campaign Monitor Sync",
+                    sync_row=sync_rollups.get("campaign_monitor"),
+                    stale_hours=self.settings.process_watchdog_campaign_monitor_stale_hours,
+                ),
+            ]
+        else:
+            queue_rollups = self._get_queue_rollups(self.settings.account_work_queue_table_fqn, "task_type")
+            discovery_queue_rollups = self._get_queue_rollups(
+                self.settings.domain_discovery_queue_table_fqn,
+                "'search'",
+            )
+            discovery_run_rollups = self._get_run_rollups(
+                self.settings.domain_discovery_runs_table_fqn,
+                "'search'",
+            )
+            rows = [
+                self._build_queue_lane_row(
+                    lane_key="validate",
+                    label="Validate",
+                    queue_row=queue_rollups.get("validate"),
+                    run_row=run_rollups.get("validate"),
+                    stale_hours=self.settings.process_watchdog_main_stale_hours,
+                ),
+                self._build_queue_lane_row(
+                    lane_key="enrich",
+                    label="Enrich",
+                    queue_row=queue_rollups.get("enrich"),
+                    run_row=run_rollups.get("enrich"),
+                    stale_hours=self.settings.process_watchdog_main_stale_hours,
+                ),
+                self._build_queue_lane_row(
+                    lane_key="enrich_gbp",
+                    label="GBP Enrichment",
+                    queue_row=queue_rollups.get("enrich_gbp"),
+                    run_row=run_rollups.get("enrich_gbp"),
+                    stale_hours=self.settings.process_watchdog_main_stale_hours,
+                ),
+                self._build_queue_lane_row(
+                    lane_key="ai_account_facts",
+                    label="AI Retrieval",
+                    queue_row=queue_rollups.get("ai_account_facts"),
+                    run_row=run_rollups.get("ai_account_facts"),
+                    stale_hours=self.settings.process_watchdog_main_stale_hours,
+                ),
+                self._build_queue_lane_row(
+                    lane_key="extract_contacts",
+                    label="Extract Contacts",
+                    queue_row=queue_rollups.get("extract_contacts"),
+                    run_row=run_rollups.get("extract_contacts"),
+                    stale_hours=self.settings.process_watchdog_main_stale_hours,
+                ),
+                self._build_queue_lane_row(
+                    lane_key="retry_blocked",
+                    label="Retry Blocked",
+                    queue_row=queue_rollups.get("retry_blocked"),
+                    run_row=run_rollups.get("retry_blocked"),
+                    stale_hours=self.settings.process_watchdog_main_stale_hours,
+                ),
+                self._build_queue_lane_row(
+                    lane_key="discovery_search",
+                    label="Discovery Search",
+                    queue_row=discovery_queue_rollups.get("search"),
+                    run_row=discovery_run_rollups.get("search"),
+                    stale_hours=self.settings.process_watchdog_discovery_stale_hours,
+                ),
+                self._build_freshness_lane_row(
+                    lane_key="prospect_lead_refresh",
+                    label="Prospect Lead Refresh",
+                    timestamp=self._get_max_timestamp(self.settings.prospect_leads_table_fqn, "updated_at"),
+                    stale_hours=self.settings.process_watchdog_prospect_leads_stale_hours,
+                    processed_24h=self._count_recent_rows(
+                        self.settings.prospect_leads_table_fqn,
+                        "updated_at",
+                        24,
+                    ),
+                    total_count=self._count_rows(self.settings.prospect_leads_table_fqn),
+                    detail_prefix="Prospect leads materialization",
+                ),
+                self._build_freshness_lane_row(
+                    lane_key="dashboard_snapshot",
+                    label="Dashboard Snapshot",
+                    timestamp=self._get_max_timestamp(self.settings.dashboard_snapshots_table_fqn, "snapshot_at"),
+                    stale_hours=self.settings.process_watchdog_snapshot_stale_hours,
+                    processed_24h=self._count_recent_rows(
+                        self.settings.dashboard_snapshots_table_fqn,
+                        "snapshot_at",
+                        24,
+                    ),
+                    total_count=self._count_rows(self.settings.dashboard_snapshots_table_fqn),
+                    detail_prefix="Dashboard snapshots",
+                ),
+                self._build_sync_lane_row(
+                    lane_key="campaign_monitor_sync",
+                    label="Campaign Monitor Sync",
+                    sync_row=sync_rollups.get("campaign_monitor"),
+                    stale_hours=self.settings.process_watchdog_campaign_monitor_stale_hours,
+                ),
+            ]
         rows.insert(0, self._build_main_worker_row(rows))
         return rows
 
@@ -885,11 +986,21 @@ class DashboardService:
 
         by_key = {str(row.get("lane_key")): row for row in process_health_rows}
         system_statuses = self._get_named_system_statuses(
-            ("client_dim", "managed_fetch", "gbp_enrichment", "ai_retrieval", "process_watchdog")
+            ("client_dim", "managed_fetch", "gbp_enrichment", "ai_retrieval", "process_watchdog", "parallel_cutover")
         )
-        return [
+        rows = [
             self._process_health_connection(by_key.get("main_worker"), "Main Worker"),
             self._process_health_connection(by_key.get("discovery_search"), "Discovery Worker"),
+            self._system_status_row(
+                name="Queue Manager",
+                sync_row=system_statuses.get("parallel_cutover"),
+                fallback_status="warning" if self.settings.queue_manager_enabled else "healthy",
+                fallback_detail=(
+                    "Queue manager is enabled but has not reported recently."
+                    if self.settings.queue_manager_enabled
+                    else "Queue manager is disabled."
+                ),
+            ),
             self._system_status_row(
                 name="Process Watchdog",
                 sync_row=system_statuses.get("process_watchdog"),
@@ -901,8 +1012,30 @@ class DashboardService:
                 ),
             ),
             self._process_health_connection(by_key.get("campaign_monitor_sync"), "Campaign Monitor"),
-            self._process_health_connection(by_key.get("ai_account_facts"), "AI Retrieval"),
-            self._process_health_connection(by_key.get("enrich_gbp"), "GBP Enrichment"),
+            self._process_health_connection(by_key.get("ai"), "AI Retrieval")
+            if self.settings.parallel_enrichment_enabled
+            else self._process_health_connection(by_key.get("ai_account_facts"), "AI Retrieval"),
+            self._process_health_connection(by_key.get("gbp"), "GBP Enrichment")
+            if self.settings.parallel_enrichment_enabled
+            else self._process_health_connection(by_key.get("enrich_gbp"), "GBP Enrichment"),
+        ]
+        return rows
+
+    def _build_cutover_health_rows(self) -> list[DashboardConnectionStatus]:
+        """Return cutover-specific health rows for the distributed-worker rollout."""
+
+        system_statuses = self._get_named_system_statuses(("parallel_cutover",))
+        return [
+            self._system_status_row(
+                name="Parallel Cutover",
+                sync_row=system_statuses.get("parallel_cutover"),
+                fallback_status="warning" if self.settings.parallel_enrichment_enabled else "healthy",
+                fallback_detail=(
+                    "Parallel worker cutover is enabled but has not been audited recently."
+                    if self.settings.parallel_enrichment_enabled
+                    else "Legacy sequential worker mode is still active."
+                ),
+            )
         ]
 
     def _process_health_connection(
@@ -942,6 +1075,21 @@ class DashboardService:
             str(row["lane_key"]): row
             for row in self.repository.fetch_all(query)
         }
+
+    def _get_single_queue_rollup(self, table_fqn: str, lane_key: str) -> dict[str, Any]:
+        """Return one queue rollup row for a dedicated single-lane queue table."""
+
+        query = f"""
+        SELECT
+          '{lane_key}' AS lane_key,
+          COUNTIF(status IN ('pending', 'retry')) AS queued_count,
+          COUNTIF(status IN ('pending', 'retry') AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP())) AS due_count,
+          COUNTIF(status = 'in_progress') AS in_progress_count,
+          COUNTIF(status = 'completed') AS completed_count,
+          COUNTIF(status = 'failed') AS failed_count
+        FROM `{table_fqn}`
+        """
+        return self.repository.fetch_one(query)
 
     def _get_run_rollups(self, table_fqn: str, lane_key_value: str) -> dict[str, dict[str, Any]]:
         """Return recent throughput and latest completion stats keyed by lane."""
@@ -1151,12 +1299,17 @@ class DashboardService:
     def _build_main_worker_row(self, rows: list[dict[str, Any]]) -> dict[str, Any]:
         """Build one summary row for the overall main worker health."""
 
-        main_keys = {"validate", "enrich", "enrich_gbp", "ai_account_facts", "extract_contacts", "retry_blocked"}
+        if self.settings.parallel_enrichment_enabled:
+            main_keys = {"validate", "crawl", "gbp", "ai", "contact_extract", "blocked_retry", "lead_refresh"}
+            label = "Parallel Enrichment Workers"
+        else:
+            main_keys = {"validate", "enrich", "enrich_gbp", "ai_account_facts", "extract_contacts", "retry_blocked"}
+            label = "Main Worker"
         main_rows = [row for row in rows if row.get("lane_key") in main_keys]
         if not main_rows:
             return {
                 "lane_key": "main_worker",
-                "label": "Main Worker",
+                "label": label,
                 "status": "warning",
                 "last_success_at": "-",
                 "runs_24h": 0,
@@ -1188,7 +1341,7 @@ class DashboardService:
             detail += " All main lanes are current or idle."
         return {
             "lane_key": "main_worker",
-            "label": "Main Worker",
+            "label": label,
             "status": status,
             "last_success_at": max((row.get("last_success_at") or "-" for row in main_rows), default="-"),
             "runs_24h": sum(int(row.get("runs_24h", 0) or 0) for row in main_rows),
@@ -1516,7 +1669,7 @@ class DashboardService:
             detail += f" at {last_synced_at}"
         if sync_detail:
             detail += f". {sync_detail}"
-        if sync_status in {"synced", "success", "completed", "configured"}:
+        if sync_status in {"synced", "success", "completed", "configured", "healthy", "repaired"}:
             status = "healthy"
         elif sync_status in {"failed", "error"}:
             status = "error"

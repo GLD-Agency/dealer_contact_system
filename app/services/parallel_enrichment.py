@@ -1,0 +1,986 @@
+"""Parallel lane queue manager and worker services."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import json
+import uuid
+
+from app.bigquery_repository import BigQueryRepository
+from app.config import Settings
+from app.logging_utils import get_logger
+from app.services.account_enrichment import AccountEnrichmentService
+from app.services.ai_retrieval import AiRetrievalService
+from app.services.browser_retry import BrowserRetryService
+from app.services.campaign_monitor import CampaignMonitorService
+from app.services.client_dim import ClientDimService
+from app.services.contact_extraction import ContactExtractionService
+from app.services.dealer_validation import DealerValidationService
+from app.services.gbp_enrichment import GbpEnrichmentService
+from app.services.prospect_leads import ProspectLeadService
+from app.services.work_queue import PipelineRunLogger
+from app.dashboard_service import DashboardService
+
+
+logger = get_logger(__name__)
+
+LANE_VALIDATE = "validate"
+LANE_CRAWL = "crawl"
+LANE_GBP = "gbp"
+LANE_AI = "ai"
+LANE_CONTACT_EXTRACT = "contact_extract"
+LANE_BLOCKED_RETRY = "blocked_retry"
+LANE_LEAD_REFRESH = "lead_refresh"
+LANES = (
+    LANE_VALIDATE,
+    LANE_CRAWL,
+    LANE_GBP,
+    LANE_AI,
+    LANE_CONTACT_EXTRACT,
+    LANE_BLOCKED_RETRY,
+    LANE_LEAD_REFRESH,
+)
+ACTIVE_QUEUE_STATUSES = ("pending", "retry", "in_progress")
+MANAGER_SEED_LIMIT_PER_LANE = 250
+
+
+@dataclass(frozen=True)
+class LaneManagerResult:
+    """Summary from one queue manager pass."""
+
+    status: str
+    detail: str
+    seeded_counts: dict[str, int]
+    duplicate_active_items: int
+
+
+class ParallelLaneManagerService:
+    """Own lane queues, event handoff, and dedupe logic."""
+
+    CONNECTION_RECORD_ID = "parallel_cutover"
+    LOCK_RECORD_ID = "parallel_cutover_lock"
+
+    def __init__(self, repository: BigQueryRepository, settings: Settings) -> None:
+        self.repository = repository
+        self.settings = settings
+
+    def queue_table_fqn(self, lane: str) -> str:
+        """Return the queue table for one lane."""
+
+        mapping = {
+            LANE_VALIDATE: self.settings.validate_queue_table_fqn,
+            LANE_CRAWL: self.settings.crawl_queue_table_fqn,
+            LANE_GBP: self.settings.gbp_queue_table_fqn,
+            LANE_AI: self.settings.ai_queue_table_fqn,
+            LANE_CONTACT_EXTRACT: self.settings.contact_extract_queue_table_fqn,
+            LANE_BLOCKED_RETRY: self.settings.blocked_retry_queue_table_fqn,
+            LANE_LEAD_REFRESH: self.settings.lead_refresh_queue_table_fqn,
+        }
+        if lane not in mapping:
+            raise ValueError(f"Unsupported lane: {lane}")
+        return mapping[lane]
+
+    def batch_size_for_lane(self, lane: str) -> int:
+        """Return the configured batch size for one lane."""
+
+        return {
+            LANE_VALIDATE: self.settings.validate_worker_batch_size,
+            LANE_CRAWL: self.settings.enrich_worker_batch_size,
+            LANE_GBP: self.settings.gbp_worker_batch_size,
+            LANE_AI: self.settings.ai_retrieval_batch_size,
+            LANE_CONTACT_EXTRACT: self.settings.extract_worker_batch_size,
+            LANE_BLOCKED_RETRY: self.settings.retry_blocked_worker_batch_size,
+            LANE_LEAD_REFRESH: max(self.settings.campaign_monitor_sync_batch_size, 250),
+        }[lane]
+
+    def seed_all(self, dry_run: bool = False) -> dict[str, int]:
+        """Seed all lanes from canonical state."""
+
+        counts: dict[str, int] = {}
+        for lane in LANES:
+            counts[lane] = self.seed_lane(lane, dry_run=dry_run)
+        return counts
+
+    def seed_lane(self, lane: str, dry_run: bool = False) -> int:
+        """Seed one lane queue from canonical state."""
+
+        rows = self.repository.fetch_all(
+            f"""
+            SELECT account_key, priority, reason
+            FROM ({self._seed_source_query(lane)})
+            LIMIT {MANAGER_SEED_LIMIT_PER_LANE}
+            """
+        )
+        if dry_run or not rows:
+            return len(rows)
+
+        self.enqueue_many(
+            lane=lane,
+            items=[
+                {
+                    "account_key": str(row["account_key"]),
+                    "reason": str(row["reason"]),
+                    "source_lane": "seed",
+                    "parent_lane": None,
+                    "priority": int(row["priority"]),
+                }
+                for row in rows
+            ],
+        )
+        return len(rows)
+
+    def enqueue(
+        self,
+        lane: str,
+        account_key: str,
+        reason: str,
+        source_lane: str,
+        parent_lane: str | None,
+        priority: int | None = None,
+    ) -> None:
+        """Create or reopen one lane queue item."""
+
+        self.enqueue_many(
+            lane=lane,
+            items=[
+                {
+                    "account_key": account_key,
+                    "reason": reason,
+                    "source_lane": source_lane,
+                    "parent_lane": parent_lane,
+                    "priority": priority,
+                }
+            ],
+        )
+
+    def enqueue_many(self, lane: str, items: list[dict[str, object]]) -> None:
+        """Create or reopen many queue items for one lane in one statement."""
+
+        if not items:
+            return
+
+        chunk_size = 100
+        for start in range(0, len(items), chunk_size):
+            self._enqueue_many_chunk(lane=lane, items=items[start : start + chunk_size])
+
+    def _enqueue_many_chunk(self, lane: str, items: list[dict[str, object]]) -> None:
+        """Create or reopen one chunk of queue items for one lane."""
+
+        queue_table = self.queue_table_fqn(lane)
+        source_rows = []
+        for item in items:
+            account_key = str(item["account_key"])
+            reason = str(item["reason"])
+            source_lane = str(item["source_lane"])
+            parent_lane = item.get("parent_lane")
+            priority = item.get("priority")
+            priority_value = int(priority) if priority is not None else self._default_priority(lane)
+            parent_sql = "CAST(NULL AS STRING)" if not parent_lane else f"CAST('{self._escape_sql(str(parent_lane))}' AS STRING)"
+            source_rows.append(
+                "SELECT "
+                f"CAST('{self._escape_sql(account_key)}' AS STRING) AS account_key, "
+                f"CAST('{self._escape_sql(self._dedupe_key(account_key, reason))}' AS STRING) AS dedupe_key, "
+                f"CAST('{self._escape_sql(reason)}' AS STRING) AS reason, "
+                f"CAST('{self._escape_sql(source_lane)}' AS STRING) AS source_lane, "
+                f"{parent_sql} AS parent_lane, "
+                f"CAST({priority_value} AS INT64) AS priority"
+            )
+        query = f"""
+        MERGE `{queue_table}` AS target
+        USING (
+          {' UNION ALL '.join(source_rows)}
+        ) AS source
+        ON target.account_key = source.account_key
+           AND target.dedupe_key = source.dedupe_key
+        WHEN MATCHED AND target.status IN ('completed', 'failed') THEN
+          UPDATE SET
+            status = 'pending',
+            priority = GREATEST(IFNULL(target.priority, 0), source.priority),
+            source_lane = source.source_lane,
+            parent_lane = source.parent_lane,
+            next_attempt_at = CURRENT_TIMESTAMP(),
+            lease_owner = NULL,
+            lease_expires_at = NULL,
+            completed_at = NULL,
+            last_error = NULL,
+            updated_at = CURRENT_TIMESTAMP()
+        WHEN MATCHED AND target.status IN ('pending', 'retry', 'in_progress') THEN
+          UPDATE SET
+            priority = GREATEST(IFNULL(target.priority, 0), source.priority),
+            source_lane = source.source_lane,
+            parent_lane = source.parent_lane,
+            updated_at = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN
+          INSERT (
+            work_item_id,
+            account_key,
+            status,
+            priority,
+            attempt_count,
+            reason,
+            dedupe_key,
+            parent_lane,
+            source_lane,
+            lease_owner,
+            lease_expires_at,
+            last_attempt_at,
+            next_attempt_at,
+            completed_at,
+            last_error,
+            created_at,
+            updated_at
+          )
+          VALUES (
+            GENERATE_UUID(),
+            source.account_key,
+            'pending',
+            source.priority,
+            0,
+            source.reason,
+            source.dedupe_key,
+            source.parent_lane,
+            source.source_lane,
+            NULL,
+            NULL,
+            NULL,
+            CURRENT_TIMESTAMP(),
+            NULL,
+            NULL,
+            CURRENT_TIMESTAMP(),
+            CURRENT_TIMESTAMP()
+          )
+        """
+        self.repository.execute_statement(query)
+
+    def claim_batch(self, lane: str, batch_size: int, worker_id: str) -> list[str]:
+        """Lease a batch of account keys for one lane."""
+
+        queue_table = self.queue_table_fqn(lane)
+        eligibility_sql = self._claim_eligibility_sql(lane)
+        update_query = f"""
+        UPDATE `{queue_table}`
+        SET
+          status = 'in_progress',
+          lease_owner = '{self._escape_sql(worker_id)}',
+          lease_expires_at = TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL {self.settings.worker_lease_minutes} MINUTE),
+          last_attempt_at = CURRENT_TIMESTAMP(),
+          attempt_count = IFNULL(attempt_count, 0) + 1,
+          updated_at = CURRENT_TIMESTAMP()
+        WHERE work_item_id IN (
+          SELECT work_item_id
+          FROM `{queue_table}`
+          WHERE status IN ('pending', 'retry')
+            AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP())
+            AND (lease_expires_at IS NULL OR lease_expires_at <= CURRENT_TIMESTAMP())
+            {eligibility_sql}
+          ORDER BY priority DESC, created_at ASC
+          LIMIT {batch_size}
+        )
+        """
+        self.repository.execute_statement(update_query)
+        query = f"""
+        SELECT account_key
+        FROM `{queue_table}`
+        WHERE lease_owner = '{self._escape_sql(worker_id)}'
+          AND status = 'in_progress'
+        ORDER BY updated_at ASC
+        """
+        return [str(row["account_key"]) for row in self.repository.fetch_all(query)]
+
+    def mark_completed(self, lane: str, account_keys: list[str]) -> None:
+        """Mark queue items complete for one lane."""
+
+        if not account_keys:
+            return
+        queue_table = self.queue_table_fqn(lane)
+        account_keys_sql = ", ".join(f"'{self._escape_sql(value)}'" for value in account_keys)
+        query = f"""
+        UPDATE `{queue_table}`
+        SET
+          status = 'completed',
+          lease_owner = NULL,
+          lease_expires_at = NULL,
+          completed_at = CURRENT_TIMESTAMP(),
+          last_error = NULL,
+          updated_at = CURRENT_TIMESTAMP()
+        WHERE account_key IN ({account_keys_sql})
+          AND status = 'in_progress'
+        """
+        self.repository.execute_statement(query)
+
+    def mark_failed(self, lane: str, account_keys: list[str], error_message: str) -> None:
+        """Return queue items to retry for one lane."""
+
+        if not account_keys:
+            return
+        queue_table = self.queue_table_fqn(lane)
+        account_keys_sql = ", ".join(f"'{self._escape_sql(value)}'" for value in account_keys)
+        retry_minutes = self._retry_delay_minutes(lane, error_message)
+        escaped_error = self._escape_sql(error_message[:4000])
+        query = f"""
+        UPDATE `{queue_table}`
+        SET
+          status = 'retry',
+          lease_owner = NULL,
+          lease_expires_at = NULL,
+          next_attempt_at = TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL {retry_minutes} MINUTE),
+          last_error = '{escaped_error}',
+          updated_at = CURRENT_TIMESTAMP()
+        WHERE account_key IN ({account_keys_sql})
+          AND status = 'in_progress'
+        """
+        self.repository.execute_statement(query)
+
+    def update_lane_state(
+        self,
+        lane: str,
+        account_keys: list[str],
+        state_status: str,
+        upstream_lane: str | None,
+        detail: str,
+    ) -> None:
+        """Upsert operational state for a lane/account pair."""
+
+        if not account_keys:
+            return
+        escaped_detail = self._escape_sql(detail[:4000])
+        upstream_sql = "NULL" if not upstream_lane else f"'{self._escape_sql(upstream_lane)}'"
+        for account_key in account_keys:
+            escaped_key = self._escape_sql(account_key)
+            query = f"""
+            MERGE `{self.settings.lane_execution_state_table_fqn}` AS target
+            USING (
+              SELECT
+                '{self._escape_sql(lane)}' AS lane_name,
+                '{escaped_key}' AS account_key
+            ) AS source
+            ON target.lane_name = source.lane_name
+               AND target.account_key = source.account_key
+            WHEN MATCHED THEN
+              UPDATE SET
+                state_status = '{self._escape_sql(state_status)}',
+                freshness_status = '{self._escape_sql(state_status)}',
+                last_attempt_at = CURRENT_TIMESTAMP(),
+                last_success_at = CASE
+                  WHEN '{self._escape_sql(state_status)}' = 'success' THEN CURRENT_TIMESTAMP()
+                  ELSE target.last_success_at
+                END,
+                next_eligible_at = CURRENT_TIMESTAMP(),
+                stale_after_at = TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL {self._stale_hours_for_lane(lane)} HOUR),
+                upstream_lane = {upstream_sql},
+                last_handoff_reason = '{self._escape_sql(detail[:255])}',
+                detail = '{escaped_detail}',
+                updated_at = CURRENT_TIMESTAMP()
+            WHEN NOT MATCHED THEN
+              INSERT (
+                lane_state_id,
+                lane_name,
+                account_key,
+                state_status,
+                freshness_status,
+                last_attempt_at,
+                last_success_at,
+                next_eligible_at,
+                stale_after_at,
+                upstream_lane,
+                last_handoff_reason,
+                detail,
+                created_at,
+                updated_at
+              )
+              VALUES (
+                GENERATE_UUID(),
+                source.lane_name,
+                source.account_key,
+                '{self._escape_sql(state_status)}',
+                '{self._escape_sql(state_status)}',
+                CURRENT_TIMESTAMP(),
+                CASE WHEN '{self._escape_sql(state_status)}' = 'success' THEN CURRENT_TIMESTAMP() ELSE NULL END,
+                CURRENT_TIMESTAMP(),
+                TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL {self._stale_hours_for_lane(lane)} HOUR),
+                {upstream_sql},
+                '{self._escape_sql(detail[:255])}',
+                '{escaped_detail}',
+                CURRENT_TIMESTAMP(),
+                CURRENT_TIMESTAMP()
+              )
+            """
+            self.repository.execute_statement(query)
+
+    def route_after_lane(self, lane: str, account_keys: list[str]) -> None:
+        """Enqueue downstream lanes based on the latest canonical state."""
+
+        if not account_keys:
+            return
+
+        snapshots = self._load_account_snapshots(account_keys)
+        for snapshot in snapshots:
+            account_key = snapshot["account_key"]
+            website_exists = bool(snapshot.get("website_url"))
+            blocked = str(snapshot.get("fetch_status") or "").lower() == "blocked"
+            missing_core = self._missing_core_details(snapshot)
+            has_contacts = int(snapshot.get("contact_count", 0) or 0) > 0
+            is_dealer = str(snapshot.get("dealer_classification") or "") in {"dealer", "dealer_group"}
+
+            if lane == LANE_VALIDATE:
+                if is_dealer:
+                    self.enqueue(LANE_CRAWL, account_key, "validated_dealer", lane, lane, 100)
+                    self.enqueue(LANE_LEAD_REFRESH, account_key, "validated_state_changed", lane, lane, 30)
+                continue
+
+            if lane == LANE_CRAWL:
+                if blocked:
+                    self.enqueue(LANE_BLOCKED_RETRY, account_key, "crawl_blocked", lane, lane, 70)
+                if missing_core or blocked:
+                    self.enqueue(LANE_AI, account_key, "crawl_incomplete", lane, lane, 65)
+                    self.enqueue(LANE_GBP, account_key, "crawl_missing_phone_or_location", lane, lane, 60)
+                if website_exists and not has_contacts:
+                    self.enqueue(LANE_CONTACT_EXTRACT, account_key, "crawl_has_website", lane, lane, 75)
+                self.enqueue(LANE_LEAD_REFRESH, account_key, "crawl_completed", lane, lane, 40)
+                continue
+
+            if lane == LANE_AI:
+                if missing_core:
+                    self.enqueue(LANE_GBP, account_key, "ai_incomplete", lane, lane, 60)
+                if website_exists and not has_contacts:
+                    self.enqueue(LANE_CONTACT_EXTRACT, account_key, "ai_has_website", lane, lane, 70)
+                self.enqueue(LANE_LEAD_REFRESH, account_key, "ai_completed", lane, lane, 40)
+                continue
+
+            if lane == LANE_GBP:
+                if website_exists and not has_contacts:
+                    self.enqueue(LANE_CONTACT_EXTRACT, account_key, "gbp_has_website", lane, lane, 70)
+                self.enqueue(LANE_LEAD_REFRESH, account_key, "gbp_completed", lane, lane, 40)
+                continue
+
+            if lane == LANE_BLOCKED_RETRY:
+                if blocked:
+                    self.enqueue(LANE_AI, account_key, "retry_still_blocked", lane, lane, 65)
+                else:
+                    self.enqueue(LANE_CRAWL, account_key, "retry_recovered_site", lane, lane, 80)
+                    if website_exists and not has_contacts:
+                        self.enqueue(LANE_CONTACT_EXTRACT, account_key, "retry_has_website", lane, lane, 70)
+                self.enqueue(LANE_LEAD_REFRESH, account_key, "blocked_retry_completed", lane, lane, 40)
+                continue
+
+            if lane == LANE_CONTACT_EXTRACT:
+                self.enqueue(LANE_LEAD_REFRESH, account_key, "contacts_extracted", lane, lane, 40)
+
+    def run_manager(self, dry_run: bool = False) -> LaneManagerResult:
+        """Seed all lanes and record cutover health."""
+
+        execution_id = str(uuid.uuid4())
+        if not dry_run and not self._acquire_manager_lock(execution_id):
+            detail = "Another queue-manager execution is already active; skipped reseed."
+            return LaneManagerResult(
+                status="skipped",
+                detail=detail,
+                seeded_counts={lane: 0 for lane in LANES},
+                duplicate_active_items=self._count_duplicate_active_items(),
+            )
+
+        seeded_counts = self.seed_all(dry_run=dry_run)
+        duplicate_active_items = self._count_duplicate_active_items()
+        detail = (
+            f"Seeded lanes: {json.dumps(seeded_counts, sort_keys=True)}. "
+            f"Duplicate active items: {duplicate_active_items}."
+        )
+        status = "warning" if duplicate_active_items else "healthy"
+        if not dry_run:
+            self._record_status(status, detail)
+        return LaneManagerResult(status, detail, seeded_counts, duplicate_active_items)
+
+    def _seed_source_query(self, lane: str) -> str:
+        """Return the canonical source query for one lane safety-net seed."""
+
+        if lane == LANE_VALIDATE:
+            return f"""
+            SELECT account_key, 100 AS priority, 'validate_account' AS reason
+            FROM `{self.settings.dealer_accounts_table_fqn}`
+            WHERE IFNULL(is_personal_domain, FALSE) = FALSE
+            """
+        if lane == LANE_CRAWL:
+            return f"""
+            SELECT account_key, 80 AS priority, 'crawl_missing_core_fields' AS reason
+            FROM `{self.settings.dealer_accounts_table_fqn}`
+            WHERE dealer_classification IN ('dealer', 'dealer_group')
+              AND (
+                website_url IS NULL
+                OR TRIM(website_url) = ''
+                OR account_name IS NULL
+                OR TRIM(account_name) = ''
+                OR inferred_brand IS NULL
+                OR TRIM(inferred_brand) = ''
+                OR account_city IS NULL
+                OR account_state IS NULL
+              )
+            """
+        if lane == LANE_GBP:
+            return f"""
+            SELECT account_key, 60 AS priority, 'gbp_missing_phone_or_address' AS reason
+            FROM `{self.settings.dealer_accounts_table_fqn}`
+            WHERE dealer_classification IN ('dealer', 'dealer_group')
+              AND (
+                best_phone IS NULL
+                OR TRIM(best_phone) = ''
+                OR gbp_address_line IS NULL
+                OR TRIM(gbp_address_line) = ''
+                OR account_city IS NULL
+                OR account_state IS NULL
+                OR fetch_status = 'blocked'
+              )
+            """
+        if lane == LANE_AI:
+            return f"""
+            SELECT account_key, 65 AS priority, 'ai_missing_phone_or_location' AS reason
+            FROM `{self.settings.dealer_accounts_table_fqn}`
+            WHERE dealer_classification IN ('dealer', 'dealer_group')
+              AND (
+                fetch_status = 'blocked'
+                OR managed_fetch_status = 'eligible'
+                OR website_url IS NULL
+                OR TRIM(website_url) = ''
+                OR best_phone IS NULL
+                OR TRIM(best_phone) = ''
+                OR account_city IS NULL
+                OR account_state IS NULL
+              )
+              AND (
+                next_ai_retrieval_at IS NULL
+                OR next_ai_retrieval_at <= CURRENT_TIMESTAMP()
+              )
+            """
+        if lane == LANE_CONTACT_EXTRACT:
+            return f"""
+            SELECT da.account_key, 70 AS priority, 'website_ready_for_contact_extract' AS reason
+            FROM `{self.settings.dealer_accounts_table_fqn}` AS da
+            WHERE da.dealer_classification IN ('dealer', 'dealer_group')
+              AND da.website_url IS NOT NULL
+              AND TRIM(da.website_url) != ''
+              AND NOT EXISTS (
+                SELECT 1
+                FROM `{self.settings.account_relationships_table_fqn}` AS ar
+                WHERE ar.dealer_account_id = da.dealer_account_id
+                  AND ar.source_type = 'website_contact_extraction'
+              )
+            """
+        if lane == LANE_BLOCKED_RETRY:
+            return f"""
+            SELECT account_key, 70 AS priority, 'blocked_site_retry_due' AS reason
+            FROM `{self.settings.dealer_accounts_table_fqn}`
+            WHERE dealer_classification IN ('dealer', 'dealer_group')
+              AND fetch_status = 'blocked'
+              AND {self._blocked_retry_due_sql('')}
+            """
+        if lane == LANE_LEAD_REFRESH:
+            return f"""
+            WITH changed_accounts AS (
+              SELECT DISTINCT account_key
+              FROM `{self.settings.dealer_accounts_table_fqn}`
+              WHERE updated_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 DAY)
+              UNION DISTINCT
+              SELECT DISTINCT da.account_key
+              FROM `{self.settings.account_relationships_table_fqn}` AS ar
+              JOIN `{self.settings.dealer_accounts_table_fqn}` AS da
+                ON da.dealer_account_id = ar.dealer_account_id
+              JOIN `{self.settings.prospect_contacts_table_fqn}` AS pc
+                ON pc.prospect_contact_id = ar.prospect_contact_id
+              WHERE ar.updated_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 DAY)
+                 OR pc.updated_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 DAY)
+            )
+            SELECT account_key, 40 AS priority, 'materialization_refresh_needed' AS reason
+            FROM changed_accounts
+            """
+        raise ValueError(f"Unsupported lane: {lane}")
+
+    def _load_account_snapshots(self, account_keys: list[str]) -> list[dict[str, object]]:
+        """Load the canonical account/contact state used for routing."""
+
+        account_keys_sql = ", ".join(f"'{self._escape_sql(value)}'" for value in account_keys)
+        query = f"""
+        SELECT
+          da.account_key,
+          da.dealer_classification,
+          NULLIF(TRIM(da.website_url), '') AS website_url,
+          da.fetch_status,
+          da.best_phone,
+          da.account_city,
+          da.account_state,
+          da.gbp_address_line,
+          da.ai_address_line,
+          da.managed_fetch_status,
+          COUNT(DISTINCT ar.relationship_id) AS contact_count,
+          COUNTIF(ar.source_type = 'website_contact_extraction') AS website_contact_count
+        FROM `{self.settings.dealer_accounts_table_fqn}` AS da
+        LEFT JOIN `{self.settings.account_relationships_table_fqn}` AS ar
+          ON ar.dealer_account_id = da.dealer_account_id
+        WHERE da.account_key IN ({account_keys_sql})
+        GROUP BY
+          da.account_key,
+          da.dealer_classification,
+          da.website_url,
+          da.fetch_status,
+          da.best_phone,
+          da.account_city,
+          da.account_state,
+          da.gbp_address_line,
+          da.ai_address_line,
+          da.managed_fetch_status
+        """
+        return self.repository.fetch_all(query)
+
+    def _missing_core_details(self, snapshot: dict[str, object]) -> bool:
+        """Return whether phone or location still looks incomplete."""
+
+        best_phone = str(snapshot.get("best_phone") or "").strip()
+        city = str(snapshot.get("account_city") or "").strip()
+        state = str(snapshot.get("account_state") or "").strip()
+        return not best_phone or not city or not state
+
+    def _count_duplicate_active_items(self) -> int:
+        """Count duplicate active queue items across lane queues."""
+
+        total = 0
+        for lane in LANES:
+            queue_table = self.queue_table_fqn(lane)
+            query = f"""
+            SELECT COUNT(*) AS duplicate_rows
+            FROM (
+              SELECT account_key, dedupe_key
+              FROM `{queue_table}`
+              WHERE status IN ('pending', 'retry', 'in_progress')
+              GROUP BY account_key, dedupe_key
+              HAVING COUNT(*) > 1
+            )
+            """
+            row = self.repository.fetch_one(query)
+            total += int(row.get("duplicate_rows", 0))
+        return total
+
+    def _record_status(self, sync_status: str, sync_detail: str) -> None:
+        """Record queue-manager/cutover health into sync targets."""
+
+        escaped_detail = self._escape_sql(sync_detail[:4000])
+        query = f"""
+        MERGE `{self.settings.sync_targets_table_fqn}` AS target
+        USING (
+          SELECT
+            '{self.CONNECTION_RECORD_ID}' AS sync_target_id,
+            'parallel_cutover' AS target_system,
+            'system' AS target_entity_type,
+            'parallel_workers' AS target_entity_id,
+            'system' AS source_record_type,
+            '{self.CONNECTION_RECORD_ID}' AS source_record_id
+        ) AS source
+        ON target.sync_target_id = source.sync_target_id
+        WHEN MATCHED THEN
+          UPDATE SET
+            sync_status = '{self._escape_sql(sync_status)}',
+            sync_detail = '{escaped_detail}',
+            last_synced_at = CURRENT_TIMESTAMP(),
+            updated_at = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN
+          INSERT (
+            sync_target_id,
+            target_system,
+            target_entity_type,
+            target_entity_id,
+            source_record_type,
+            source_record_id,
+            sync_status,
+            sync_detail,
+            last_synced_at,
+            created_at,
+            updated_at
+          )
+          VALUES (
+            source.sync_target_id,
+            source.target_system,
+            source.target_entity_type,
+            source.target_entity_id,
+            source.source_record_type,
+            source.source_record_id,
+            '{self._escape_sql(sync_status)}',
+            '{escaped_detail}',
+            CURRENT_TIMESTAMP(),
+            CURRENT_TIMESTAMP(),
+            CURRENT_TIMESTAMP()
+          )
+        """
+        self.repository.execute_statement(query)
+
+    def _acquire_manager_lock(self, execution_id: str) -> bool:
+        """Acquire a coarse queue-manager lock so reseed passes do not overlap."""
+
+        detail = self._escape_sql(f"execution:{execution_id}")
+        query = f"""
+        MERGE `{self.settings.sync_targets_table_fqn}` AS target
+        USING (
+          SELECT
+            '{self.LOCK_RECORD_ID}' AS sync_target_id,
+            'parallel_cutover_lock' AS target_system,
+            'system' AS target_entity_type,
+            'parallel_workers' AS target_entity_id,
+            'system' AS source_record_type,
+            '{self.LOCK_RECORD_ID}' AS source_record_id
+        ) AS source
+        ON target.sync_target_id = source.sync_target_id
+        WHEN MATCHED
+          AND (
+            target.sync_status != 'running'
+            OR target.updated_at IS NULL
+            OR target.updated_at < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 25 MINUTE)
+          )
+        THEN
+          UPDATE SET
+            sync_status = 'running',
+            sync_detail = '{detail}',
+            last_synced_at = CURRENT_TIMESTAMP(),
+            updated_at = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN
+          INSERT (
+            sync_target_id,
+            target_system,
+            target_entity_type,
+            target_entity_id,
+            source_record_type,
+            source_record_id,
+            sync_status,
+            sync_detail,
+            last_synced_at,
+            created_at,
+            updated_at
+          )
+          VALUES (
+            source.sync_target_id,
+            source.target_system,
+            source.target_entity_type,
+            source.target_entity_id,
+            source.source_record_type,
+            source.source_record_id,
+            'running',
+            '{detail}',
+            CURRENT_TIMESTAMP(),
+            CURRENT_TIMESTAMP(),
+            CURRENT_TIMESTAMP()
+          )
+        """
+        self.repository.execute_statement(query)
+        row = self.repository.fetch_one(
+            f"""
+            SELECT sync_status, sync_detail
+            FROM `{self.settings.sync_targets_table_fqn}`
+            WHERE sync_target_id = '{self.LOCK_RECORD_ID}'
+            """
+        )
+        return (
+            str(row.get("sync_status") or "") == "running"
+            and str(row.get("sync_detail") or "") == f"execution:{execution_id}"
+        )
+
+    def _claim_eligibility_sql(self, lane: str) -> str:
+        """Return additional claim-time eligibility checks for one lane."""
+
+        if lane != LANE_AI:
+            return ""
+        return f"""
+          AND account_key IN (
+            SELECT account_key
+            FROM `{self.settings.dealer_accounts_table_fqn}`
+            WHERE dealer_classification IN ('dealer', 'dealer_group')
+              AND (
+                next_ai_retrieval_at IS NULL
+                OR next_ai_retrieval_at <= CURRENT_TIMESTAMP()
+              )
+          )
+        """
+
+    def _default_priority(self, lane: str) -> int:
+        return {
+            LANE_VALIDATE: 100,
+            LANE_CRAWL: 80,
+            LANE_GBP: 60,
+            LANE_AI: 65,
+            LANE_CONTACT_EXTRACT: 70,
+            LANE_BLOCKED_RETRY: 70,
+            LANE_LEAD_REFRESH: 40,
+        }[lane]
+
+    def _retry_delay_minutes(self, lane: str, error_message: str) -> int:
+        error_text = error_message.lower()
+        if lane == LANE_AI and "rate limit" in error_text:
+            return self.settings.ai_retrieval_rate_limit_cooldown_minutes
+        return 60
+
+    def _stale_hours_for_lane(self, lane: str) -> int:
+        if lane == LANE_LEAD_REFRESH:
+            return self.settings.process_watchdog_prospect_leads_stale_hours
+        return self.settings.process_watchdog_main_stale_hours
+
+    def _dedupe_key(self, account_key: str, reason: str) -> str:
+        return f"{account_key.lower()}::{reason.lower()}"
+
+    def _blocked_retry_due_sql(self, alias: str) -> str:
+        """Return SQL for when a blocked retry is eligible."""
+
+        prefix = f"{alias}." if alias else ""
+        short_hours = self.settings.blocked_retry_short_cooldown_hours
+        medium_hours = self.settings.blocked_retry_medium_cooldown_hours
+        long_hours = self.settings.blocked_retry_long_cooldown_hours
+        return f"""
+        (
+          {prefix}last_fetch_attempt_at IS NULL
+          OR CURRENT_TIMESTAMP() >= CASE
+            WHEN IFNULL({prefix}blocked_attempt_count, 0) <= 1 THEN TIMESTAMP_ADD({prefix}last_fetch_attempt_at, INTERVAL {short_hours} HOUR)
+            WHEN IFNULL({prefix}blocked_attempt_count, 0) <= 3 THEN TIMESTAMP_ADD({prefix}last_fetch_attempt_at, INTERVAL {medium_hours} HOUR)
+            ELSE TIMESTAMP_ADD({prefix}last_fetch_attempt_at, INTERVAL {long_hours} HOUR)
+          END
+        )
+        """
+
+    def _escape_sql(self, value: str) -> str:
+        return (
+            value.replace("\\", "\\\\")
+            .replace("'", "\\'")
+            .replace("\r", "\\r")
+            .replace("\n", "\\n")
+        )
+
+
+class ParallelLaneWorkerService:
+    """Run one parallel enrichment lane at a time."""
+
+    def __init__(self, repository: BigQueryRepository, settings: Settings) -> None:
+        self.repository = repository
+        self.settings = settings
+        self.manager = ParallelLaneManagerService(repository, settings)
+        self.run_logger = PipelineRunLogger(repository, settings)
+        self.dealer_validation = DealerValidationService(repository, settings)
+        self.account_enrichment = AccountEnrichmentService(repository, settings)
+        self.gbp_enrichment = GbpEnrichmentService(repository, settings)
+        self.ai_retrieval = AiRetrievalService(repository, settings)
+        self.contact_extraction = ContactExtractionService(repository, settings)
+        self.browser_retry = BrowserRetryService(repository, settings)
+        self.prospect_lead_service = ProspectLeadService(repository, settings)
+        self.client_dim_service = ClientDimService(repository, settings)
+        self.dashboard_service = DashboardService(repository, settings)
+        self.campaign_monitor_service = CampaignMonitorService(repository, settings)
+
+    def run_lane(self, lane: str, dry_run: bool = False, seed: bool = False) -> dict[str, object]:
+        """Run one lane queue loop."""
+
+        if seed:
+            self.manager.seed_lane(lane, dry_run=dry_run)
+        batch_size = self.manager.batch_size_for_lane(lane)
+        if dry_run:
+            return {
+                "lane": lane,
+                "status": "preview",
+                "claimed_count": 0,
+                "succeeded_count": 0,
+                "failed_count": 0,
+                "detail": "Dry run did not claim any queue items.",
+            }
+
+        worker_id = str(uuid.uuid4())
+        pipeline_run_id = self.run_logger.start_run(
+            task_type=lane,
+            worker_id=worker_id,
+            requested_batch_size=batch_size,
+        )
+        account_keys = self.manager.claim_batch(lane, batch_size, worker_id)
+        logger.info("Lane worker claimed queue items", extra={"lane": lane, "claimed_count": len(account_keys)})
+        if not account_keys:
+            self.run_logger.finish_run(
+                pipeline_run_id=pipeline_run_id,
+                run_status="completed",
+                claimed_count=0,
+                succeeded_count=0,
+                failed_count=0,
+                run_notes="No lane queue items were available to claim.",
+            )
+            return {
+                "lane": lane,
+                "status": "completed",
+                "claimed_count": 0,
+                "succeeded_count": 0,
+                "failed_count": 0,
+                "detail": "No queue items were available to claim.",
+            }
+
+        try:
+            logger.info("Lane worker dispatch starting", extra={"lane": lane, "claimed_count": len(account_keys)})
+            self._dispatch_lane(lane, account_keys)
+            logger.info("Lane worker dispatch finished", extra={"lane": lane, "claimed_count": len(account_keys)})
+            self.manager.mark_completed(lane, account_keys)
+            self.manager.update_lane_state(lane, account_keys, "success", None, f"{lane} completed")
+            self.manager.route_after_lane(lane, account_keys)
+            self.run_logger.finish_run(
+                pipeline_run_id=pipeline_run_id,
+                run_status="completed",
+                claimed_count=len(account_keys),
+                succeeded_count=len(account_keys),
+                failed_count=0,
+                run_notes=None,
+            )
+            return {
+                "lane": lane,
+                "status": "completed",
+                "claimed_count": len(account_keys),
+                "succeeded_count": len(account_keys),
+                "failed_count": 0,
+                "detail": f"Processed {len(account_keys)} account(s).",
+            }
+        except Exception as exc:
+            error_message = str(exc)
+            self.manager.mark_failed(lane, account_keys, error_message)
+            self.manager.update_lane_state(lane, account_keys, "failed", None, error_message)
+            self.run_logger.finish_run(
+                pipeline_run_id=pipeline_run_id,
+                run_status="failed",
+                claimed_count=len(account_keys),
+                succeeded_count=0,
+                failed_count=len(account_keys),
+                run_notes=error_message,
+            )
+            raise
+
+    def _dispatch_lane(self, lane: str, account_keys: list[str]) -> None:
+        """Dispatch one lane to the underlying enrichment service."""
+
+        limit = len(account_keys)
+        if lane == LANE_VALIDATE:
+            self.dealer_validation.validate(dry_run=False, limit=limit, account_keys=account_keys)
+            return
+        if lane == LANE_CRAWL:
+            self.account_enrichment.enrich(dry_run=False, limit=limit, account_keys=account_keys)
+            return
+        if lane == LANE_GBP:
+            result = self.gbp_enrichment.enrich(dry_run=False, limit=limit, account_keys=account_keys)
+            if result.status not in {"success", "preview"}:
+                raise RuntimeError(result.detail)
+            return
+        if lane == LANE_AI:
+            result = self.ai_retrieval.refresh_account_facts(dry_run=False, limit=limit, account_keys=account_keys)
+            if result.status in {"warning", "failed"}:
+                raise RuntimeError(result.detail)
+            return
+        if lane == LANE_CONTACT_EXTRACT:
+            self.contact_extraction.extract(dry_run=False, limit=limit, account_keys=account_keys)
+            return
+        if lane == LANE_BLOCKED_RETRY:
+            self.browser_retry.retry(dry_run=False, limit=limit, account_keys=account_keys)
+            return
+        if lane == LANE_LEAD_REFRESH:
+            self.prospect_lead_service.refresh(dry_run=False)
+            self.client_dim_service.refresh(dry_run=False)
+            self.dashboard_service.capture_snapshot()
+            self.campaign_monitor_service.check_connection(dry_run=False)
+            if self.settings.campaign_monitor_sync_enabled:
+                self.campaign_monitor_service.sync_subscribers(
+                    dry_run=False,
+                    limit=self.settings.campaign_monitor_sync_batch_size,
+                )
+            return
+        raise ValueError(f"Unsupported lane: {lane}")

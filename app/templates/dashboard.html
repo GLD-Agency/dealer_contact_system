@@ -113,6 +113,24 @@
             {% endfor %}
           </div>
         </article>
+
+        <article class="card">
+          <div class="section-head">
+            <h2>Cutover Health</h2>
+            <p>Parallel-worker ownership, audit, and duplicate-work safety for the new distributed model.</p>
+          </div>
+          <div class="connection-list">
+            {% for item in data.cutover_health_rows %}
+            <div class="connection-row">
+              <div>
+                <strong>{{ item.name }}</strong>
+                <p>{{ item.detail }}</p>
+              </div>
+              <span class="pill pill-{{ item.status }}">{{ item.status }}</span>
+            </div>
+            {% endfor %}
+          </div>
+        </article>
       </section>
 
       <section class="card">

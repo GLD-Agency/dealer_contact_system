@@ -20,6 +20,27 @@ class SchemaManager:
     def ensure_tables(self) -> None:
         """Create canonical tables if they are missing."""
 
+        lane_queue_schema = """
+            (
+              work_item_id STRING NOT NULL,
+              account_key STRING NOT NULL,
+              status STRING NOT NULL,
+              priority INT64,
+              attempt_count INT64,
+              reason STRING,
+              dedupe_key STRING,
+              parent_lane STRING,
+              source_lane STRING,
+              lease_owner STRING,
+              lease_expires_at TIMESTAMP,
+              last_attempt_at TIMESTAMP,
+              next_attempt_at TIMESTAMP,
+              completed_at TIMESTAMP,
+              last_error STRING,
+              created_at TIMESTAMP,
+              updated_at TIMESTAMP
+            )
+        """
         statements = {
             self.settings.dealer_accounts_table_fqn: f"""
             CREATE TABLE IF NOT EXISTS `{self.settings.dealer_accounts_table_fqn}` (
@@ -190,6 +211,45 @@ class SchemaManager:
               next_attempt_at TIMESTAMP,
               completed_at TIMESTAMP,
               last_error STRING,
+              created_at TIMESTAMP,
+              updated_at TIMESTAMP
+            )
+            """,
+            self.settings.validate_queue_table_fqn: f"""
+            CREATE TABLE IF NOT EXISTS `{self.settings.validate_queue_table_fqn}` {lane_queue_schema}
+            """,
+            self.settings.crawl_queue_table_fqn: f"""
+            CREATE TABLE IF NOT EXISTS `{self.settings.crawl_queue_table_fqn}` {lane_queue_schema}
+            """,
+            self.settings.gbp_queue_table_fqn: f"""
+            CREATE TABLE IF NOT EXISTS `{self.settings.gbp_queue_table_fqn}` {lane_queue_schema}
+            """,
+            self.settings.ai_queue_table_fqn: f"""
+            CREATE TABLE IF NOT EXISTS `{self.settings.ai_queue_table_fqn}` {lane_queue_schema}
+            """,
+            self.settings.contact_extract_queue_table_fqn: f"""
+            CREATE TABLE IF NOT EXISTS `{self.settings.contact_extract_queue_table_fqn}` {lane_queue_schema}
+            """,
+            self.settings.blocked_retry_queue_table_fqn: f"""
+            CREATE TABLE IF NOT EXISTS `{self.settings.blocked_retry_queue_table_fqn}` {lane_queue_schema}
+            """,
+            self.settings.lead_refresh_queue_table_fqn: f"""
+            CREATE TABLE IF NOT EXISTS `{self.settings.lead_refresh_queue_table_fqn}` {lane_queue_schema}
+            """,
+            self.settings.lane_execution_state_table_fqn: f"""
+            CREATE TABLE IF NOT EXISTS `{self.settings.lane_execution_state_table_fqn}` (
+              lane_state_id STRING NOT NULL,
+              lane_name STRING NOT NULL,
+              account_key STRING NOT NULL,
+              state_status STRING NOT NULL,
+              freshness_status STRING,
+              last_attempt_at TIMESTAMP,
+              last_success_at TIMESTAMP,
+              next_eligible_at TIMESTAMP,
+              stale_after_at TIMESTAMP,
+              upstream_lane STRING,
+              last_handoff_reason STRING,
+              detail STRING,
               created_at TIMESTAMP,
               updated_at TIMESTAMP
             )
@@ -445,6 +505,61 @@ class SchemaManager:
 
         self._ensure_optional_columns()
         self._ensure_views()
+
+    def ensure_parallel_worker_tables(self) -> None:
+        """Create only the distributed-worker operational tables."""
+
+        lane_queue_schema = """
+            (
+              work_item_id STRING NOT NULL,
+              account_key STRING NOT NULL,
+              status STRING NOT NULL,
+              priority INT64,
+              attempt_count INT64,
+              reason STRING,
+              dedupe_key STRING,
+              parent_lane STRING,
+              source_lane STRING,
+              lease_owner STRING,
+              lease_expires_at TIMESTAMP,
+              last_attempt_at TIMESTAMP,
+              next_attempt_at TIMESTAMP,
+              completed_at TIMESTAMP,
+              last_error STRING,
+              created_at TIMESTAMP,
+              updated_at TIMESTAMP
+            )
+        """
+        statements = {
+            self.settings.validate_queue_table_fqn: f"CREATE TABLE IF NOT EXISTS `{self.settings.validate_queue_table_fqn}` {lane_queue_schema}",
+            self.settings.crawl_queue_table_fqn: f"CREATE TABLE IF NOT EXISTS `{self.settings.crawl_queue_table_fqn}` {lane_queue_schema}",
+            self.settings.gbp_queue_table_fqn: f"CREATE TABLE IF NOT EXISTS `{self.settings.gbp_queue_table_fqn}` {lane_queue_schema}",
+            self.settings.ai_queue_table_fqn: f"CREATE TABLE IF NOT EXISTS `{self.settings.ai_queue_table_fqn}` {lane_queue_schema}",
+            self.settings.contact_extract_queue_table_fqn: f"CREATE TABLE IF NOT EXISTS `{self.settings.contact_extract_queue_table_fqn}` {lane_queue_schema}",
+            self.settings.blocked_retry_queue_table_fqn: f"CREATE TABLE IF NOT EXISTS `{self.settings.blocked_retry_queue_table_fqn}` {lane_queue_schema}",
+            self.settings.lead_refresh_queue_table_fqn: f"CREATE TABLE IF NOT EXISTS `{self.settings.lead_refresh_queue_table_fqn}` {lane_queue_schema}",
+            self.settings.lane_execution_state_table_fqn: f"""
+            CREATE TABLE IF NOT EXISTS `{self.settings.lane_execution_state_table_fqn}` (
+              lane_state_id STRING NOT NULL,
+              lane_name STRING NOT NULL,
+              account_key STRING NOT NULL,
+              state_status STRING NOT NULL,
+              freshness_status STRING,
+              last_attempt_at TIMESTAMP,
+              last_success_at TIMESTAMP,
+              next_eligible_at TIMESTAMP,
+              stale_after_at TIMESTAMP,
+              upstream_lane STRING,
+              last_handoff_reason STRING,
+              detail STRING,
+              created_at TIMESTAMP,
+              updated_at TIMESTAMP
+            )
+            """,
+        }
+        for table_name, statement in statements.items():
+            logger.info("Ensuring parallel worker table exists: %s", table_name)
+            self.repository.execute_statement(statement)
 
     def _ensure_optional_columns(self) -> None:
         """Add newly introduced columns without rewriting any tables."""
