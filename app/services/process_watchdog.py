@@ -92,57 +92,95 @@ class ProcessWatchdogService:
     def run(self, dry_run: bool = False) -> ProcessWatchdogResult:
         """Check process freshness, repair stale materializations, and relaunch stale jobs."""
 
-        if not self.settings.process_watchdog_enabled:
-            result = ProcessWatchdogResult(
-                status="skipped",
-                detail="Process watchdog is disabled.",
-                checks=tuple(),
-                main_job_triggered=False,
-                discovery_job_triggered=False,
-                repaired_materializations=False,
-            )
-            if not dry_run:
-                self._record_status("warning")
-            return result
-
-        checks: list[WatchdogCheck] = []
-        main_job_triggered = False
-        discovery_job_triggered = False
-        repaired_materializations = False
-
-        main_check = self._check_main_pipeline()
-        checks.append(main_check)
-
-        discovery_check = self._check_discovery_pipeline()
-        checks.append(discovery_check)
-
-        prospect_check = self._check_prospect_leads()
-        checks.append(prospect_check)
-
-        snapshot_check = self._check_dashboard_snapshot()
-        checks.append(snapshot_check)
-
-        campaign_monitor_check = self._check_campaign_monitor()
-        checks.append(campaign_monitor_check)
-
-        any_stale = any(check.status in {"stale", "failed"} for check in checks)
-        any_warning = any(check.status == "warning" for check in checks)
-
-        if prospect_check.status == "stale":
-            if dry_run:
-                checks[-3] = WatchdogCheck(prospect_check.name, "stale", prospect_check.detail, action="dry_run")
-            else:
-                self.prospect_lead_service.refresh(dry_run=False)
-                self.client_dim_service.refresh(dry_run=False)
-                self.dashboard_service.capture_snapshot()
-                repaired_materializations = True
-                checks[-3] = WatchdogCheck(
-                    prospect_check.name,
-                    "repaired",
-                    prospect_check.detail,
-                    action="refreshed_prospect_leads_and_snapshot",
+        try:
+            if not self.settings.process_watchdog_enabled:
+                result = ProcessWatchdogResult(
+                    status="skipped",
+                    detail="Process watchdog is disabled.",
+                    checks=tuple(),
+                    main_job_triggered=False,
+                    discovery_job_triggered=False,
+                    repaired_materializations=False,
                 )
-                if snapshot_check.status == "stale":
+                if not dry_run:
+                    self._record_status("warning", result.detail)
+                return result
+
+            checks: list[WatchdogCheck] = []
+            main_job_triggered = False
+            discovery_job_triggered = False
+            repaired_materializations = False
+
+            health_rows = {
+                row["lane_key"]: row
+                for row in self.dashboard_service.get_process_health_rows()
+            }
+            main_check = self._process_row_to_check(
+                health_rows.get("main_worker"),
+                fallback_name="Main Worker",
+                fallback_detail="Main worker health data is unavailable.",
+            )
+            checks.append(main_check)
+
+            discovery_check = self._process_row_to_check(
+                health_rows.get("discovery_search"),
+                fallback_name="Discovery Worker",
+                fallback_detail="Discovery worker health data is unavailable.",
+            )
+            checks.append(discovery_check)
+
+            prospect_check = self._process_row_to_check(
+                health_rows.get("prospect_lead_refresh"),
+                fallback_name="Prospect Lead Refresh",
+                fallback_detail="Prospect lead refresh health data is unavailable.",
+            )
+            checks.append(prospect_check)
+
+            snapshot_check = self._process_row_to_check(
+                health_rows.get("dashboard_snapshot"),
+                fallback_name="Dashboard Snapshot",
+                fallback_detail="Dashboard snapshot health data is unavailable.",
+            )
+            checks.append(snapshot_check)
+
+            campaign_monitor_check = self._process_row_to_check(
+                health_rows.get("campaign_monitor_sync"),
+                fallback_name="Campaign Monitor Sync",
+                fallback_detail="Campaign Monitor sync health data is unavailable.",
+            )
+            checks.append(campaign_monitor_check)
+
+            any_stale = any(check.status in {"stale", "failed"} for check in checks)
+            any_warning = any(check.status == "warning" for check in checks)
+
+            if prospect_check.status == "stale":
+                if dry_run:
+                    checks[-3] = WatchdogCheck(prospect_check.name, "stale", prospect_check.detail, action="dry_run")
+                else:
+                    self.prospect_lead_service.refresh(dry_run=False)
+                    self.client_dim_service.refresh(dry_run=False)
+                    self.dashboard_service.capture_snapshot()
+                    repaired_materializations = True
+                    checks[-3] = WatchdogCheck(
+                        prospect_check.name,
+                        "repaired",
+                        prospect_check.detail,
+                        action="refreshed_prospect_leads_and_snapshot",
+                    )
+                    if snapshot_check.status == "stale":
+                        checks[-2] = WatchdogCheck(
+                            snapshot_check.name,
+                            "repaired",
+                            snapshot_check.detail,
+                            action="captured_dashboard_snapshot",
+                        )
+
+            if snapshot_check.status == "stale" and not repaired_materializations:
+                if dry_run:
+                    checks[-2] = WatchdogCheck(snapshot_check.name, "stale", snapshot_check.detail, action="dry_run")
+                else:
+                    self.dashboard_service.capture_snapshot()
+                    repaired_materializations = True
                     checks[-2] = WatchdogCheck(
                         snapshot_check.name,
                         "repaired",
@@ -150,79 +188,71 @@ class ProcessWatchdogService:
                         action="captured_dashboard_snapshot",
                     )
 
-        if snapshot_check.status == "stale" and not repaired_materializations:
-            if dry_run:
-                checks[-2] = WatchdogCheck(snapshot_check.name, "stale", snapshot_check.detail, action="dry_run")
+            if main_check.status in {"stale", "failed"}:
+                if dry_run:
+                    checks[0] = WatchdogCheck(main_check.name, main_check.status, main_check.detail, action="dry_run")
+                else:
+                    self._job_launcher_instance().execute_job(self.settings.cloud_run_job_name)
+                    main_job_triggered = True
+                    checks[0] = WatchdogCheck(
+                        main_check.name,
+                        "restarted",
+                        main_check.detail,
+                        action=f"executed_{self.settings.cloud_run_job_name}",
+                    )
+
+            if discovery_check.status in {"stale", "failed"}:
+                if dry_run:
+                    checks[1] = WatchdogCheck(discovery_check.name, discovery_check.status, discovery_check.detail, action="dry_run")
+                else:
+                    self._job_launcher_instance().execute_job(self.settings.domain_discovery_job_name)
+                    discovery_job_triggered = True
+                    checks[1] = WatchdogCheck(
+                        discovery_check.name,
+                        "restarted",
+                        discovery_check.detail,
+                        action=f"executed_{self.settings.domain_discovery_job_name}",
+                    )
+
+            if campaign_monitor_check.status in {"stale", "failed"} and self.settings.campaign_monitor_sync_enabled:
+                if dry_run:
+                    checks[-1] = WatchdogCheck(campaign_monitor_check.name, campaign_monitor_check.status, campaign_monitor_check.detail, action="dry_run")
+                elif not main_job_triggered:
+                    self._job_launcher_instance().execute_job(self.settings.cloud_run_job_name)
+                    main_job_triggered = True
+                    checks[-1] = WatchdogCheck(
+                        campaign_monitor_check.name,
+                        "restarted",
+                        campaign_monitor_check.detail,
+                        action=f"executed_{self.settings.cloud_run_job_name}_for_campaign_monitor",
+                    )
+
+            if any(check.status in {"restarted", "repaired"} for check in checks):
+                status = "repaired"
+            elif any_stale:
+                status = "warning" if dry_run else "stale"
+            elif any_warning:
+                status = "warning"
             else:
-                self.dashboard_service.capture_snapshot()
-                repaired_materializations = True
-                checks[-2] = WatchdogCheck(
-                    snapshot_check.name,
-                    "repaired",
-                    snapshot_check.detail,
-                    action="captured_dashboard_snapshot",
-                )
+                status = "healthy"
 
-        if main_check.status == "stale":
-            if dry_run:
-                checks[0] = WatchdogCheck(main_check.name, "stale", main_check.detail, action="dry_run")
-            else:
-                self._job_launcher_instance().execute_job(self.settings.cloud_run_job_name)
-                main_job_triggered = True
-                checks[0] = WatchdogCheck(
-                    main_check.name,
-                    "restarted",
-                    main_check.detail,
-                    action=f"executed_{self.settings.cloud_run_job_name}",
-                )
-
-        if discovery_check.status == "stale":
-            if dry_run:
-                checks[1] = WatchdogCheck(discovery_check.name, "stale", discovery_check.detail, action="dry_run")
-            else:
-                self._job_launcher_instance().execute_job(self.settings.domain_discovery_job_name)
-                discovery_job_triggered = True
-                checks[1] = WatchdogCheck(
-                    discovery_check.name,
-                    "restarted",
-                    discovery_check.detail,
-                    action=f"executed_{self.settings.domain_discovery_job_name}",
-                )
-
-        if campaign_monitor_check.status == "stale" and self.settings.campaign_monitor_sync_enabled:
-            if dry_run:
-                checks[-1] = WatchdogCheck(campaign_monitor_check.name, "stale", campaign_monitor_check.detail, action="dry_run")
-            elif not main_job_triggered:
-                self._job_launcher_instance().execute_job(self.settings.cloud_run_job_name)
-                main_job_triggered = True
-                checks[-1] = WatchdogCheck(
-                    campaign_monitor_check.name,
-                    "restarted",
-                    campaign_monitor_check.detail,
-                    action=f"executed_{self.settings.cloud_run_job_name}_for_campaign_monitor",
-                )
-
-        if any(check.status in {"restarted", "repaired"} for check in checks):
-            status = "repaired"
-        elif any_stale:
-            status = "warning" if dry_run else "stale"
-        elif any_warning:
-            status = "warning"
-        else:
-            status = "healthy"
-
-        detail = self._build_detail(checks)
-        result = ProcessWatchdogResult(
-            status=status,
-            detail=detail,
-            checks=tuple(checks),
-            main_job_triggered=main_job_triggered,
-            discovery_job_triggered=discovery_job_triggered,
-            repaired_materializations=repaired_materializations,
-        )
-        if not dry_run:
-            self._record_status("configured" if status in {"healthy", "warning"} else "warning")
-        return result
+            detail = self._build_detail(checks)
+            result = ProcessWatchdogResult(
+                status=status,
+                detail=detail,
+                checks=tuple(checks),
+                main_job_triggered=main_job_triggered,
+                discovery_job_triggered=discovery_job_triggered,
+                repaired_materializations=repaired_materializations,
+            )
+            if not dry_run:
+                sync_status = "healthy" if status in {"healthy", "repaired"} else "warning"
+                self._record_status(sync_status, detail)
+            return result
+        except Exception as exc:
+            if not dry_run:
+                self._record_status("error", f"Process watchdog failed: {exc}")
+            raise
 
     def _check_main_pipeline(self) -> WatchdogCheck:
         """Return whether the main worker tasks look fresh."""
@@ -413,7 +443,26 @@ class ProcessWatchdogService:
         ]
         return json.dumps(summary, separators=(",", ":"))
 
-    def _record_status(self, sync_status: str) -> None:
+    def _process_row_to_check(
+        self,
+        row: dict[str, Any] | None,
+        *,
+        fallback_name: str,
+        fallback_detail: str,
+    ) -> WatchdogCheck:
+        """Translate one shared process-health row into a watchdog check."""
+
+        if not row:
+            return WatchdogCheck(fallback_name, "warning", fallback_detail)
+        status = str(row.get("status") or "warning").lower()
+        detail = str(row.get("detail") or fallback_detail)
+        if status == "backlogged":
+            status = "warning"
+        if status == "flat":
+            status = "healthy"
+        return WatchdogCheck(str(row.get("label") or fallback_name), status, detail)
+
+    def _record_status(self, sync_status: str, sync_detail: str) -> None:
         """Upsert the latest watchdog status into sync_targets for dashboard visibility."""
 
         query = f"""
@@ -425,7 +474,8 @@ class ProcessWatchdogService:
             '{self._escape_sql(self.settings.process_watchdog_job_name)}' AS target_entity_id,
             'system' AS source_record_type,
             '{self.CONNECTION_RECORD_ID}' AS source_record_id,
-            '{self._escape_sql(sync_status)}' AS sync_status
+            '{self._escape_sql(sync_status)}' AS sync_status,
+            '{self._escape_sql(sync_detail)}' AS sync_detail
         ) AS source
         ON target.target_system = source.target_system
            AND target.source_record_type = source.source_record_type
@@ -435,6 +485,7 @@ class ProcessWatchdogService:
             target_entity_type = source.target_entity_type,
             target_entity_id = source.target_entity_id,
             sync_status = source.sync_status,
+            sync_detail = source.sync_detail,
             last_synced_at = CURRENT_TIMESTAMP(),
             updated_at = CURRENT_TIMESTAMP()
         WHEN NOT MATCHED THEN
@@ -446,11 +497,12 @@ class ProcessWatchdogService:
             source_record_type,
             source_record_id,
             sync_status,
+            sync_detail,
             last_synced_at,
             created_at,
             updated_at
           )
-          VALUES (
+        VALUES (
             GENERATE_UUID(),
             source.target_system,
             source.target_entity_type,
@@ -458,6 +510,7 @@ class ProcessWatchdogService:
             source.source_record_type,
             source.source_record_id,
             source.sync_status,
+            source.sync_detail,
             CURRENT_TIMESTAMP(),
             CURRENT_TIMESTAMP(),
             CURRENT_TIMESTAMP()

@@ -170,6 +170,7 @@ class SchemaManager:
               source_record_type STRING NOT NULL,
               source_record_id STRING NOT NULL,
               sync_status STRING,
+              sync_detail STRING,
               last_synced_at TIMESTAMP,
               created_at TIMESTAMP,
               updated_at TIMESTAMP
@@ -537,6 +538,7 @@ class SchemaManager:
             f"ALTER TABLE `{self.settings.prospect_contacts_table_fqn}` ADD COLUMN IF NOT EXISTS country STRING",
             f"ALTER TABLE `{self.settings.prospect_contacts_table_fqn}` ADD COLUMN IF NOT EXISTS source_url STRING",
             f"ALTER TABLE `{self.settings.account_relationships_table_fqn}` ADD COLUMN IF NOT EXISTS source_url STRING",
+            f"ALTER TABLE `{self.settings.sync_targets_table_fqn}` ADD COLUMN IF NOT EXISTS sync_detail STRING",
             f"ALTER TABLE `{self.settings.account_work_queue_table_fqn}` ADD COLUMN IF NOT EXISTS priority INT64",
             f"ALTER TABLE `{self.settings.account_work_queue_table_fqn}` ADD COLUMN IF NOT EXISTS attempt_count INT64",
             f"ALTER TABLE `{self.settings.account_work_queue_table_fqn}` ADD COLUMN IF NOT EXISTS lease_owner STRING",

@@ -766,7 +766,6 @@ def main() -> None:
         return
 
     if args.command == "run-process-watchdog":
-        schema_manager.ensure_tables()
         result = process_watchdog_service.run(dry_run=args.dry_run)
         logger.info("Process watchdog complete | status=%s | detail=%s", result.status, result.detail)
         print(f"Process watchdog status: {result.status}")

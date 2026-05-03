@@ -130,6 +130,11 @@ h1 {
   padding: 20px;
 }
 
+.alert-card {
+  border-color: rgba(184, 92, 56, 0.25);
+  background: rgba(255, 246, 240, 0.92);
+}
+
 .stat-card {
   min-height: 132px;
   display: flex;
@@ -379,9 +384,28 @@ h1 {
   color: #765e21;
 }
 
+.pill-flat {
+  background: rgba(68, 84, 74, 0.1);
+  color: #44544a;
+}
+
+.pill-backlogged {
+  background: rgba(184, 148, 71, 0.16);
+  color: #765e21;
+}
+
+.pill-stale,
+.pill-failed,
 .pill-error {
   background: rgba(184, 92, 56, 0.16);
   color: #7b2b10;
+}
+
+.table-subtext {
+  margin-top: 6px;
+  color: rgba(29, 43, 44, 0.72);
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 table {

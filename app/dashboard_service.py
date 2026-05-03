@@ -34,12 +34,16 @@ class DashboardService:
         latest_snapshot = self._get_latest_snapshot()
         previous_snapshot = self._get_previous_snapshot()
         trend_rows = self._get_recent_snapshots()
+        process_health_rows = self.get_process_health_rows()
         return {
             "generated_at": datetime.now().strftime("%Y-%m-%d %I:%M %p"),
             "environment": self.settings.environment,
             "project_id": self.settings.bigquery_project_id,
             "dataset": self.settings.bigquery_dataset,
             "overview": overview,
+            "snapshot_warning": self._build_snapshot_warning(process_health_rows),
+            "process_health_rows": process_health_rows,
+            "system_health_rows": self._build_system_health_rows(process_health_rows),
             "discovery_overview": self._get_discovery_overview(),
             "discovery_runtime": self._get_discovery_runtime_details(),
             "snapshot_summary": self._build_snapshot_summary(latest_snapshot, previous_snapshot),
@@ -57,6 +61,107 @@ class DashboardService:
             "blocked_accounts": self._get_blocked_accounts(),
             "integration_connections": self._get_integration_connections(),
         }
+
+    def get_process_health_rows(self) -> list[dict[str, Any]]:
+        """Return shared lane-health rows for both the dashboard and watchdog."""
+
+        queue_rollups = self._get_queue_rollups(self.settings.account_work_queue_table_fqn, "task_type")
+        run_rollups = self._get_run_rollups(self.settings.pipeline_runs_table_fqn, "task_type")
+        discovery_queue_rollups = self._get_queue_rollups(
+            self.settings.domain_discovery_queue_table_fqn,
+            "'search'",
+        )
+        discovery_run_rollups = self._get_run_rollups(
+            self.settings.domain_discovery_runs_table_fqn,
+            "'search'",
+        )
+        sync_rollups = self._get_sync_rollups()
+
+        rows = [
+            self._build_queue_lane_row(
+                lane_key="validate",
+                label="Validate",
+                queue_row=queue_rollups.get("validate"),
+                run_row=run_rollups.get("validate"),
+                stale_hours=self.settings.process_watchdog_main_stale_hours,
+            ),
+            self._build_queue_lane_row(
+                lane_key="enrich",
+                label="Enrich",
+                queue_row=queue_rollups.get("enrich"),
+                run_row=run_rollups.get("enrich"),
+                stale_hours=self.settings.process_watchdog_main_stale_hours,
+            ),
+            self._build_queue_lane_row(
+                lane_key="enrich_gbp",
+                label="GBP Enrichment",
+                queue_row=queue_rollups.get("enrich_gbp"),
+                run_row=run_rollups.get("enrich_gbp"),
+                stale_hours=self.settings.process_watchdog_main_stale_hours,
+            ),
+            self._build_queue_lane_row(
+                lane_key="ai_account_facts",
+                label="AI Retrieval",
+                queue_row=queue_rollups.get("ai_account_facts"),
+                run_row=run_rollups.get("ai_account_facts"),
+                stale_hours=self.settings.process_watchdog_main_stale_hours,
+            ),
+            self._build_queue_lane_row(
+                lane_key="extract_contacts",
+                label="Extract Contacts",
+                queue_row=queue_rollups.get("extract_contacts"),
+                run_row=run_rollups.get("extract_contacts"),
+                stale_hours=self.settings.process_watchdog_main_stale_hours,
+            ),
+            self._build_queue_lane_row(
+                lane_key="retry_blocked",
+                label="Retry Blocked",
+                queue_row=queue_rollups.get("retry_blocked"),
+                run_row=run_rollups.get("retry_blocked"),
+                stale_hours=self.settings.process_watchdog_main_stale_hours,
+            ),
+            self._build_queue_lane_row(
+                lane_key="discovery_search",
+                label="Discovery Search",
+                queue_row=discovery_queue_rollups.get("search"),
+                run_row=discovery_run_rollups.get("search"),
+                stale_hours=self.settings.process_watchdog_discovery_stale_hours,
+            ),
+            self._build_freshness_lane_row(
+                lane_key="prospect_lead_refresh",
+                label="Prospect Lead Refresh",
+                timestamp=self._get_max_timestamp(self.settings.prospect_leads_table_fqn, "updated_at"),
+                stale_hours=self.settings.process_watchdog_prospect_leads_stale_hours,
+                processed_24h=self._count_recent_rows(
+                    self.settings.prospect_leads_table_fqn,
+                    "updated_at",
+                    24,
+                ),
+                total_count=self._count_rows(self.settings.prospect_leads_table_fqn),
+                detail_prefix="Prospect leads materialization",
+            ),
+            self._build_freshness_lane_row(
+                lane_key="dashboard_snapshot",
+                label="Dashboard Snapshot",
+                timestamp=self._get_max_timestamp(self.settings.dashboard_snapshots_table_fqn, "snapshot_at"),
+                stale_hours=self.settings.process_watchdog_snapshot_stale_hours,
+                processed_24h=self._count_recent_rows(
+                    self.settings.dashboard_snapshots_table_fqn,
+                    "snapshot_at",
+                    24,
+                ),
+                total_count=self._count_rows(self.settings.dashboard_snapshots_table_fqn),
+                detail_prefix="Dashboard snapshots",
+            ),
+            self._build_sync_lane_row(
+                lane_key="campaign_monitor_sync",
+                label="Campaign Monitor Sync",
+                sync_row=sync_rollups.get("campaign_monitor"),
+                stale_hours=self.settings.process_watchdog_campaign_monitor_stale_hours,
+            ),
+        ]
+        rows.insert(0, self._build_main_worker_row(rows))
+        return rows
 
     def get_client_records_page(self, page: int = 1, page_size: int = 100) -> dict[str, Any]:
         """Return paginated prospect lead rows for the read-only client records UI."""
@@ -757,6 +862,390 @@ class DashboardService:
             points.append(f"{x},{y}")
         return " ".join(points)
 
+    def _build_snapshot_warning(self, process_health_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """Return a visible snapshot warning when dashboard trend data is stale."""
+
+        snapshot_row = next(
+            (row for row in process_health_rows if row.get("lane_key") == "dashboard_snapshot"),
+            None,
+        )
+        if not snapshot_row or snapshot_row.get("status") not in {"stale", "failed"}:
+            return None
+        return {
+            "title": "Snapshot Freshness Warning",
+            "detail": str(snapshot_row.get("detail") or "Dashboard snapshots are stale."),
+            "last_success_at": snapshot_row.get("last_success_at") or "-",
+        }
+
+    def _build_system_health_rows(
+        self,
+        process_health_rows: list[dict[str, Any]],
+    ) -> list[DashboardConnectionStatus]:
+        """Build the top-level system health rows shown above the dashboard details."""
+
+        by_key = {str(row.get("lane_key")): row for row in process_health_rows}
+        system_statuses = self._get_named_system_statuses(
+            ("client_dim", "managed_fetch", "gbp_enrichment", "ai_retrieval", "process_watchdog")
+        )
+        return [
+            self._process_health_connection(by_key.get("main_worker"), "Main Worker"),
+            self._process_health_connection(by_key.get("discovery_search"), "Discovery Worker"),
+            self._system_status_row(
+                name="Process Watchdog",
+                sync_row=system_statuses.get("process_watchdog"),
+                fallback_status="warning" if self.settings.process_watchdog_enabled else "healthy",
+                fallback_detail=(
+                    "Watchdog is enabled but has not reported recently."
+                    if self.settings.process_watchdog_enabled
+                    else "Watchdog is disabled."
+                ),
+            ),
+            self._process_health_connection(by_key.get("campaign_monitor_sync"), "Campaign Monitor"),
+            self._process_health_connection(by_key.get("ai_account_facts"), "AI Retrieval"),
+            self._process_health_connection(by_key.get("enrich_gbp"), "GBP Enrichment"),
+        ]
+
+    def _process_health_connection(
+        self,
+        row: dict[str, Any] | None,
+        fallback_name: str,
+    ) -> DashboardConnectionStatus:
+        """Convert one process-health row into a connection-style dashboard badge."""
+
+        if not row:
+            return DashboardConnectionStatus(
+                name=fallback_name,
+                status="warning",
+                detail="Health data is unavailable.",
+            )
+        return DashboardConnectionStatus(
+            name=str(row.get("label") or fallback_name),
+            status=str(row.get("status") or "warning"),
+            detail=str(row.get("detail") or "Health data is unavailable."),
+        )
+
+    def _get_queue_rollups(self, table_fqn: str, lane_key_value: str) -> dict[str, dict[str, Any]]:
+        """Return queued and due counts keyed by task or run type."""
+
+        query = f"""
+        SELECT
+          {lane_key_value} AS lane_key,
+          COUNTIF(status IN ('pending', 'retry')) AS queued_count,
+          COUNTIF(status IN ('pending', 'retry') AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP())) AS due_count,
+          COUNTIF(status = 'in_progress') AS in_progress_count,
+          COUNTIF(status = 'completed') AS completed_count,
+          COUNTIF(status = 'failed') AS failed_count
+        FROM `{table_fqn}`
+        GROUP BY lane_key
+        """
+        return {
+            str(row["lane_key"]): row
+            for row in self.repository.fetch_all(query)
+        }
+
+    def _get_run_rollups(self, table_fqn: str, lane_key_value: str) -> dict[str, dict[str, Any]]:
+        """Return recent throughput and latest completion stats keyed by lane."""
+
+        query = f"""
+        SELECT
+          {lane_key_value} AS lane_key,
+          COUNTIF(started_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 24 HOUR)) AS runs_24h,
+          SUM(IF(started_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 24 HOUR), IFNULL(claimed_count, 0), 0)) AS processed_24h,
+          SUM(IF(started_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 24 HOUR), IFNULL(succeeded_count, 0), 0)) AS succeeded_24h,
+          SUM(IF(started_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 24 HOUR), IFNULL(failed_count, 0), 0)) AS failed_24h,
+          MAX(IF(run_status = 'completed', completed_at, NULL)) AS last_success_at,
+          MAX(started_at) AS last_started_at
+        FROM `{table_fqn}`
+        GROUP BY lane_key
+        """
+        return {
+            str(row["lane_key"]): row
+            for row in self.repository.fetch_all(query)
+        }
+
+    def _get_sync_rollups(self) -> dict[str, dict[str, Any]]:
+        """Return one latest sync row per target system plus recent sync volume."""
+
+        query = f"""
+        WITH latest_rows AS (
+          SELECT
+            target_system,
+            sync_status,
+            sync_detail,
+            last_synced_at,
+            ROW_NUMBER() OVER (
+              PARTITION BY target_system
+              ORDER BY last_synced_at DESC NULLS LAST, updated_at DESC NULLS LAST, created_at DESC
+            ) AS row_number
+          FROM `{self.settings.sync_targets_table_fqn}`
+        ),
+        recent_counts AS (
+          SELECT
+            target_system,
+            COUNTIF(last_synced_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 24 HOUR)) AS synced_24h
+          FROM `{self.settings.sync_targets_table_fqn}`
+          GROUP BY target_system
+        )
+        SELECT
+          latest_rows.target_system,
+          latest_rows.sync_status,
+          latest_rows.sync_detail,
+          latest_rows.last_synced_at,
+          IFNULL(recent_counts.synced_24h, 0) AS synced_24h
+        FROM latest_rows
+        LEFT JOIN recent_counts
+          ON recent_counts.target_system = latest_rows.target_system
+        WHERE latest_rows.row_number = 1
+        """
+        return {
+            str(row["target_system"]): row
+            for row in self.repository.fetch_all(query)
+        }
+
+    def _count_rows(self, table_fqn: str) -> int:
+        """Return one table row count."""
+
+        row = self.repository.fetch_one(f"SELECT COUNT(*) AS row_count FROM `{table_fqn}`")
+        return int(row.get("row_count", 0) or 0)
+
+    def _count_recent_rows(self, table_fqn: str, timestamp_column: str, hours: int) -> int:
+        """Return rows updated within the requested freshness window."""
+
+        query = f"""
+        SELECT COUNT(*) AS row_count
+        FROM `{table_fqn}`
+        WHERE {timestamp_column} >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {hours} HOUR)
+        """
+        row = self.repository.fetch_one(query)
+        return int(row.get("row_count", 0) or 0)
+
+    def _get_max_timestamp(self, table_fqn: str, timestamp_column: str) -> Any:
+        """Return one latest timestamp value from a table."""
+
+        row = self.repository.fetch_one(
+            f"SELECT MAX({timestamp_column}) AS latest_timestamp FROM `{table_fqn}`"
+        )
+        return row.get("latest_timestamp")
+
+    def _build_queue_lane_row(
+        self,
+        *,
+        lane_key: str,
+        label: str,
+        queue_row: dict[str, Any] | None,
+        run_row: dict[str, Any] | None,
+        stale_hours: int,
+    ) -> dict[str, Any]:
+        """Build one process-health row for a queue-backed pipeline lane."""
+
+        queue_row = queue_row or {}
+        run_row = run_row or {}
+        queued_count = int(queue_row.get("queued_count", 0) or 0)
+        due_count = int(queue_row.get("due_count", 0) or 0)
+        in_progress_count = int(queue_row.get("in_progress_count", 0) or 0)
+        runs_24h = int(run_row.get("runs_24h", 0) or 0)
+        processed_24h = int(run_row.get("processed_24h", 0) or 0)
+        succeeded_24h = int(run_row.get("succeeded_24h", 0) or 0)
+        failed_24h = int(run_row.get("failed_24h", 0) or 0)
+        last_success_at = run_row.get("last_success_at")
+
+        status = self._classify_queue_lane_status(
+            last_success_at=last_success_at,
+            stale_hours=stale_hours,
+            queued_count=queued_count,
+            due_count=due_count,
+            succeeded_24h=succeeded_24h,
+            failed_24h=failed_24h,
+        )
+        detail = (
+            f"{queued_count:,} queued, {due_count:,} due, {processed_24h:,} processed in the last 24 hours, "
+            f"{failed_24h:,} failed, last success {self._format_timestamp(last_success_at)}."
+        )
+        return {
+            "lane_key": lane_key,
+            "label": label,
+            "status": status,
+            "last_success_at": self._format_timestamp(last_success_at),
+            "runs_24h": runs_24h,
+            "processed_24h": processed_24h,
+            "succeeded_24h": succeeded_24h,
+            "failed_24h": failed_24h,
+            "queued_count": queued_count,
+            "due_count": due_count,
+            "in_progress_count": in_progress_count,
+            "detail": detail,
+        }
+
+    def _build_freshness_lane_row(
+        self,
+        *,
+        lane_key: str,
+        label: str,
+        timestamp: Any,
+        stale_hours: int,
+        processed_24h: int,
+        total_count: int,
+        detail_prefix: str,
+    ) -> dict[str, Any]:
+        """Build one process-health row for a freshness-driven lane."""
+
+        status = "stale" if self._is_timestamp_stale(timestamp, stale_hours) else "healthy"
+        detail = (
+            f"{detail_prefix} last updated {self._format_timestamp(timestamp)}. "
+            f"{processed_24h:,} update(s) in the last 24 hours across {total_count:,} total row(s)."
+        )
+        return {
+            "lane_key": lane_key,
+            "label": label,
+            "status": status,
+            "last_success_at": self._format_timestamp(timestamp),
+            "runs_24h": processed_24h,
+            "processed_24h": processed_24h,
+            "succeeded_24h": processed_24h,
+            "failed_24h": 0,
+            "queued_count": 0,
+            "due_count": 0,
+            "in_progress_count": 0,
+            "detail": detail,
+        }
+
+    def _build_sync_lane_row(
+        self,
+        *,
+        lane_key: str,
+        label: str,
+        sync_row: dict[str, Any] | None,
+        stale_hours: int,
+    ) -> dict[str, Any]:
+        """Build one process-health row for sync-driven lanes."""
+
+        sync_row = sync_row or {}
+        last_success_at = sync_row.get("last_synced_at")
+        synced_24h = int(sync_row.get("synced_24h", 0) or 0)
+        sync_status = str(sync_row.get("sync_status") or "unknown").lower()
+        sync_detail = str(sync_row.get("sync_detail") or "").strip()
+        if sync_status in {"failed", "error"}:
+            status = "failed"
+        elif self._is_timestamp_stale(last_success_at, stale_hours):
+            status = "stale"
+        else:
+            status = "healthy"
+        detail = f"Latest sync status {sync_status} at {self._format_timestamp(last_success_at)}."
+        if sync_detail:
+            detail = f"{detail} {sync_detail}"
+        return {
+            "lane_key": lane_key,
+            "label": label,
+            "status": status,
+            "last_success_at": self._format_timestamp(last_success_at),
+            "runs_24h": synced_24h,
+            "processed_24h": synced_24h,
+            "succeeded_24h": synced_24h,
+            "failed_24h": 0 if status != "failed" else 1,
+            "queued_count": 0,
+            "due_count": 0,
+            "in_progress_count": 0,
+            "detail": detail,
+        }
+
+    def _build_main_worker_row(self, rows: list[dict[str, Any]]) -> dict[str, Any]:
+        """Build one summary row for the overall main worker health."""
+
+        main_keys = {"validate", "enrich", "enrich_gbp", "ai_account_facts", "extract_contacts", "retry_blocked"}
+        main_rows = [row for row in rows if row.get("lane_key") in main_keys]
+        if not main_rows:
+            return {
+                "lane_key": "main_worker",
+                "label": "Main Worker",
+                "status": "warning",
+                "last_success_at": "-",
+                "runs_24h": 0,
+                "processed_24h": 0,
+                "succeeded_24h": 0,
+                "failed_24h": 0,
+                "queued_count": 0,
+                "due_count": 0,
+                "in_progress_count": 0,
+                "detail": "No main-worker health rows are available.",
+            }
+
+        status = "healthy"
+        if any(row["status"] == "failed" for row in main_rows):
+            status = "failed"
+        elif any(row["status"] == "stale" for row in main_rows):
+            status = "stale"
+        elif any(row["status"] == "backlogged" for row in main_rows):
+            status = "backlogged"
+
+        non_healthy = [row["label"] for row in main_rows if row["status"] in {"failed", "stale", "backlogged"}]
+        detail = (
+            f"{sum(int(row.get('queued_count', 0) or 0) for row in main_rows):,} queued across main lanes, "
+            f"{sum(int(row.get('processed_24h', 0) or 0) for row in main_rows):,} processed in the last 24 hours."
+        )
+        if non_healthy:
+            detail += f" Attention needed for: {', '.join(non_healthy)}."
+        else:
+            detail += " All main lanes are current or idle."
+        return {
+            "lane_key": "main_worker",
+            "label": "Main Worker",
+            "status": status,
+            "last_success_at": max((row.get("last_success_at") or "-" for row in main_rows), default="-"),
+            "runs_24h": sum(int(row.get("runs_24h", 0) or 0) for row in main_rows),
+            "processed_24h": sum(int(row.get("processed_24h", 0) or 0) for row in main_rows),
+            "succeeded_24h": sum(int(row.get("succeeded_24h", 0) or 0) for row in main_rows),
+            "failed_24h": sum(int(row.get("failed_24h", 0) or 0) for row in main_rows),
+            "queued_count": sum(int(row.get("queued_count", 0) or 0) for row in main_rows),
+            "due_count": sum(int(row.get("due_count", 0) or 0) for row in main_rows),
+            "in_progress_count": sum(int(row.get("in_progress_count", 0) or 0) for row in main_rows),
+            "detail": detail,
+        }
+
+    def _classify_queue_lane_status(
+        self,
+        *,
+        last_success_at: Any,
+        stale_hours: int,
+        queued_count: int,
+        due_count: int,
+        succeeded_24h: int,
+        failed_24h: int,
+    ) -> str:
+        """Return one normalized process-health state for a queue-backed lane."""
+
+        if due_count > 0 and self._is_timestamp_stale(last_success_at, stale_hours):
+            return "stale"
+        if due_count > 0 and failed_24h > 0 and succeeded_24h == 0:
+            return "failed"
+        if due_count == 0:
+            return "flat"
+        if queued_count > 0 and (succeeded_24h == 0 or due_count > max(succeeded_24h * 10, 25)):
+            return "backlogged"
+        return "healthy"
+
+    def _is_timestamp_stale(self, timestamp_value: Any, stale_hours: int) -> bool:
+        """Return whether the timestamp is older than the allowed window."""
+
+        if stale_hours <= 0:
+            return False
+        timestamp = self._coerce_datetime(timestamp_value)
+        if not timestamp:
+            return True
+        elapsed_seconds = (datetime.utcnow() - timestamp.replace(tzinfo=None)).total_seconds()
+        return elapsed_seconds > (stale_hours * 3600)
+
+    def _coerce_datetime(self, value: Any) -> datetime | None:
+        """Normalize a timestamp-like value for stale checks."""
+
+        if not value:
+            return None
+        if isinstance(value, datetime):
+            return value
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
     def _get_connections(self, overview: dict[str, Any]) -> list[DashboardConnectionStatus]:
         """Create human-readable system health rows."""
 
@@ -930,9 +1419,12 @@ class DashboardService:
 
         sync_status = (sync_row.get("sync_status") or "unknown").lower()
         last_synced_at = sync_row.get("last_synced_at")
+        sync_detail = str(sync_row.get("sync_detail") or "").strip()
         detail = f"Latest sync status: {sync_status}"
         if last_synced_at:
             detail += f" at {last_synced_at}"
+        if sync_detail:
+            detail += f". {sync_detail}"
 
         if sync_status in {"synced", "success", "completed"}:
             status = "healthy"
@@ -954,11 +1446,13 @@ class DashboardService:
         SELECT
           target_system,
           sync_status,
+          sync_detail,
           last_synced_at
         FROM (
           SELECT
             target_system,
             sync_status,
+            sync_detail,
             last_synced_at,
             ROW_NUMBER() OVER (
               PARTITION BY target_system
@@ -982,11 +1476,13 @@ class DashboardService:
         SELECT
           target_system,
           sync_status,
+          sync_detail,
           last_synced_at
         FROM (
           SELECT
             target_system,
             sync_status,
+            sync_detail,
             last_synced_at,
             ROW_NUMBER() OVER (
               PARTITION BY target_system
@@ -1014,11 +1510,12 @@ class DashboardService:
 
         sync_status = str(sync_row.get("sync_status") or "unknown").lower()
         last_synced_at = sync_row.get("last_synced_at")
+        sync_detail = str(sync_row.get("sync_detail") or "").strip()
         detail = f"Latest status: {sync_status}"
         if last_synced_at:
             detail += f" at {last_synced_at}"
-        if fallback_detail:
-            detail += f". {fallback_detail}"
+        if sync_detail:
+            detail += f". {sync_detail}"
         if sync_status in {"synced", "success", "completed", "configured"}:
             status = "healthy"
         elif sync_status in {"failed", "error"}:

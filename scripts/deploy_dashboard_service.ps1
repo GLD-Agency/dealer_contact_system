@@ -4,6 +4,17 @@ param(
   [string]$Repository = "dealer-contact-system",
   [string]$ImageName = "dealer-contact-dashboard",
   [string]$ServiceName = "dealer-contact-dashboard",
+  [bool]$AiRetrievalEnabled = $true,
+  [bool]$DomainDiscoveryEnabled = $true,
+  [bool]$ProcessWatchdogEnabled = $true,
+  [bool]$GeminiEnabled = $true,
+  [string]$GeminiModel = "gemini-2.5-flash",
+  [string]$DomainDiscoveryScheduleHint = "Every 30 minutes",
+  [string]$DomainDiscoveryJobName = "dealer-domain-discovery-worker",
+  [string]$DomainDiscoverySchedulerName = "dealer-domain-discovery-schedule",
+  [string]$DomainDiscoveryVpcConnector = "dealer-discovery-conn",
+  [string]$DomainDiscoveryVpcEgress = "all-traffic",
+  [string]$DomainDiscoveryEgressIp = "34.45.226.9",
   [string]$CampaignMonitorApiKeySecret = "campaign-monitor-api-key:latest",
   [string]$CampaignMonitorClientIdSecret = "campaign-monitor-client-id:latest",
   [string]$GeminiApiKeySecret = "gemini-api-key:latest",
@@ -16,6 +27,17 @@ $envVars = @(
   "APP_ENVIRONMENT=cloud"
   "BIGQUERY_PROJECT_ID=$ProjectId"
   "BIGQUERY_DATASET=dealer_data"
+  "AI_RETRIEVAL_ENABLED=$($AiRetrievalEnabled.ToString().ToLower())"
+  "DOMAIN_DISCOVERY_ENABLED=$($DomainDiscoveryEnabled.ToString().ToLower())"
+  "PROCESS_WATCHDOG_ENABLED=$($ProcessWatchdogEnabled.ToString().ToLower())"
+  "GEMINI_ENABLED=$($GeminiEnabled.ToString().ToLower())"
+  "GEMINI_MODEL=$GeminiModel"
+  "DOMAIN_DISCOVERY_SCHEDULE_HINT=$DomainDiscoveryScheduleHint"
+  "DOMAIN_DISCOVERY_JOB_NAME=$DomainDiscoveryJobName"
+  "DOMAIN_DISCOVERY_SCHEDULER_NAME=$DomainDiscoverySchedulerName"
+  "DOMAIN_DISCOVERY_VPC_CONNECTOR=$DomainDiscoveryVpcConnector"
+  "DOMAIN_DISCOVERY_VPC_EGRESS=$DomainDiscoveryVpcEgress"
+  "DOMAIN_DISCOVERY_EGRESS_IP=$DomainDiscoveryEgressIp"
 )
 
 if ($env:META_ACCESS_TOKEN) {
@@ -54,38 +76,8 @@ if ($env:CLIENT_DIM_DATASET) {
 if ($env:CLIENT_DIM_TABLE) {
   $envVars += "CLIENT_DIM_TABLE=$($env:CLIENT_DIM_TABLE)"
 }
-if ($env:AI_RETRIEVAL_ENABLED) {
-  $envVars += "AI_RETRIEVAL_ENABLED=$($env:AI_RETRIEVAL_ENABLED)"
-}
-if ($env:DOMAIN_DISCOVERY_ENABLED) {
-  $envVars += "DOMAIN_DISCOVERY_ENABLED=$($env:DOMAIN_DISCOVERY_ENABLED)"
-}
-if ($env:DOMAIN_DISCOVERY_SCHEDULE_HINT) {
-  $envVars += "DOMAIN_DISCOVERY_SCHEDULE_HINT=$($env:DOMAIN_DISCOVERY_SCHEDULE_HINT)"
-}
-if ($env:DOMAIN_DISCOVERY_JOB_NAME) {
-  $envVars += "DOMAIN_DISCOVERY_JOB_NAME=$($env:DOMAIN_DISCOVERY_JOB_NAME)"
-}
-if ($env:DOMAIN_DISCOVERY_SCHEDULER_NAME) {
-  $envVars += "DOMAIN_DISCOVERY_SCHEDULER_NAME=$($env:DOMAIN_DISCOVERY_SCHEDULER_NAME)"
-}
-if ($env:DOMAIN_DISCOVERY_VPC_CONNECTOR) {
-  $envVars += "DOMAIN_DISCOVERY_VPC_CONNECTOR=$($env:DOMAIN_DISCOVERY_VPC_CONNECTOR)"
-}
-if ($env:DOMAIN_DISCOVERY_VPC_EGRESS) {
-  $envVars += "DOMAIN_DISCOVERY_VPC_EGRESS=$($env:DOMAIN_DISCOVERY_VPC_EGRESS)"
-}
-if ($env:DOMAIN_DISCOVERY_EGRESS_IP) {
-  $envVars += "DOMAIN_DISCOVERY_EGRESS_IP=$($env:DOMAIN_DISCOVERY_EGRESS_IP)"
-}
 if ($env:AI_RETRIEVAL_PROVIDER_ORDER) {
   $envVars += "AI_RETRIEVAL_PROVIDER_ORDER=$($env:AI_RETRIEVAL_PROVIDER_ORDER)"
-}
-if ($env:GEMINI_ENABLED) {
-  $envVars += "GEMINI_ENABLED=$($env:GEMINI_ENABLED)"
-}
-if ($env:GEMINI_MODEL) {
-  $envVars += "GEMINI_MODEL=$($env:GEMINI_MODEL)"
 }
 if ($env:OPENAI_ENABLED) {
   $envVars += "OPENAI_ENABLED=$($env:OPENAI_ENABLED)"

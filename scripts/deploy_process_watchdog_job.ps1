@@ -11,6 +11,11 @@ param(
     [int]$SnapshotStaleHours = 8,
     [int]$CampaignMonitorStaleHours = 8,
     [int]$RunningGraceMinutes = 90,
+    [bool]$CampaignMonitorSyncEnabled = $true,
+    [bool]$ClientDimEnabled = $true,
+    [string]$GldAccountabilityProjectId = "productivity-project-491503",
+    [string]$ClientDimDataset = "accountability_v1",
+    [string]$ClientDimTable = "dim_clients",
     [int]$TaskTimeoutSeconds = 900
 )
 
@@ -33,24 +38,13 @@ $envVars = @(
     "PROCESS_WATCHDOG_PROSPECT_LEADS_STALE_HOURS=$ProspectLeadsStaleHours",
     "PROCESS_WATCHDOG_SNAPSHOT_STALE_HOURS=$SnapshotStaleHours",
     "PROCESS_WATCHDOG_CAMPAIGN_MONITOR_STALE_HOURS=$CampaignMonitorStaleHours",
-    "PROCESS_WATCHDOG_RUNNING_GRACE_MINUTES=$RunningGraceMinutes"
+    "PROCESS_WATCHDOG_RUNNING_GRACE_MINUTES=$RunningGraceMinutes",
+    "CAMPAIGN_MONITOR_SYNC_ENABLED=$($CampaignMonitorSyncEnabled.ToString().ToLower())",
+    "CLIENT_DIM_ENABLED=$($ClientDimEnabled.ToString().ToLower())",
+    "GLD_ACCOUNTABILITY_PROJECT_ID=$GldAccountabilityProjectId",
+    "CLIENT_DIM_DATASET=$ClientDimDataset",
+    "CLIENT_DIM_TABLE=$ClientDimTable"
 )
-
-if ($env:CLIENT_DIM_ENABLED) {
-    $envVars += "CLIENT_DIM_ENABLED=$($env:CLIENT_DIM_ENABLED)"
-}
-if ($env:GLD_ACCOUNTABILITY_PROJECT_ID) {
-    $envVars += "GLD_ACCOUNTABILITY_PROJECT_ID=$($env:GLD_ACCOUNTABILITY_PROJECT_ID)"
-}
-if ($env:CLIENT_DIM_DATASET) {
-    $envVars += "CLIENT_DIM_DATASET=$($env:CLIENT_DIM_DATASET)"
-}
-if ($env:CLIENT_DIM_TABLE) {
-    $envVars += "CLIENT_DIM_TABLE=$($env:CLIENT_DIM_TABLE)"
-}
-if ($env:CAMPAIGN_MONITOR_SYNC_ENABLED) {
-    $envVars += "CAMPAIGN_MONITOR_SYNC_ENABLED=$($env:CAMPAIGN_MONITOR_SYNC_ENABLED)"
-}
 
 $envVarMap = @{}
 foreach ($entry in $envVars) {

@@ -62,6 +62,97 @@
         </div>
       </section>
 
+      {% if data.snapshot_warning %}
+      <section class="card alert-card">
+        <div class="section-head">
+          <h2>{{ data.snapshot_warning.title }}</h2>
+          <p>{{ data.snapshot_warning.detail }}</p>
+        </div>
+        <div class="list-stack">
+          <div class="metric-row">
+            <span>Last Snapshot Success</span>
+            <strong>{{ data.snapshot_warning.last_success_at }}</strong>
+          </div>
+        </div>
+      </section>
+      {% endif %}
+
+      <section class="card-grid two-column">
+        <article class="card">
+          <div class="section-head">
+            <h2>System Health</h2>
+            <p>Top-line health for the major runtime lanes and self-heal protection.</p>
+          </div>
+          <div class="connection-list">
+            {% for item in data.system_health_rows %}
+            <div class="connection-row">
+              <div>
+                <strong>{{ item.name }}</strong>
+                <p>{{ item.detail }}</p>
+              </div>
+              <span class="pill pill-{{ item.status }}">{{ item.status }}</span>
+            </div>
+            {% endfor %}
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="section-head">
+            <h2>Platform Connections</h2>
+            <p>Downstream sync readiness for marketing and audience systems.</p>
+          </div>
+          <div class="connection-list">
+            {% for item in data.integration_connections %}
+            <div class="connection-row">
+              <div>
+                <strong>{{ item.name }}</strong>
+                <p>{{ item.detail }}</p>
+              </div>
+              <span class="pill pill-{{ item.status }}">{{ item.status }}</span>
+            </div>
+            {% endfor %}
+          </div>
+        </article>
+      </section>
+
+      <section class="card">
+        <div class="section-head">
+          <h2>Process Health</h2>
+          <p>Lane-by-lane health so flat, backlogged, stale, and failed states are clearly separated.</p>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Lane</th>
+              <th>Status</th>
+              <th>Last Success</th>
+              <th>Runs 24h</th>
+              <th>Processed 24h</th>
+              <th>Failed 24h</th>
+              <th>Due Work</th>
+              <th>Queued</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in data.process_health_rows %}
+            <tr>
+              <td>
+                <strong>{{ row.label }}</strong>
+                <div class="table-subtext">{{ row.detail }}</div>
+              </td>
+              <td><span class="pill pill-{{ row.status }}">{{ row.status }}</span></td>
+              <td>{{ row.last_success_at }}</td>
+              <td>{{ "{:,}".format(row.runs_24h or 0) }}</td>
+              <td>{{ "{:,}".format(row.processed_24h or 0) }}</td>
+              <td>{{ "{:,}".format(row.failed_24h or 0) }}</td>
+              <td>{{ "{:,}".format(row.due_count or 0) }}</td>
+              <td>{{ "{:,}".format(row.queued_count or 0) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+
       <section class="card">
         <div class="section-head">
           <h2>Change Since Last Snapshot</h2>
@@ -110,44 +201,6 @@
           </article>
           {% endfor %}
         </div>
-      </section>
-
-      <section class="card-grid two-column">
-        <article class="card">
-          <div class="section-head">
-            <h2>Connections</h2>
-            <p>High-level health for data and runtime dependencies.</p>
-          </div>
-          <div class="connection-list">
-            {% for item in data.connections %}
-            <div class="connection-row">
-              <div>
-                <strong>{{ item.name }}</strong>
-                <p>{{ item.detail }}</p>
-              </div>
-              <span class="pill pill-{{ item.status }}">{{ item.status }}</span>
-            </div>
-            {% endfor %}
-          </div>
-        </article>
-
-        <article class="card">
-          <div class="section-head">
-            <h2>Platform Connections</h2>
-            <p>Downstream sync readiness for marketing and audience systems.</p>
-          </div>
-          <div class="connection-list">
-            {% for item in data.integration_connections %}
-            <div class="connection-row">
-              <div>
-                <strong>{{ item.name }}</strong>
-                <p>{{ item.detail }}</p>
-              </div>
-              <span class="pill pill-{{ item.status }}">{{ item.status }}</span>
-            </div>
-            {% endfor %}
-          </div>
-        </article>
       </section>
 
       <section class="card-grid two-column">
