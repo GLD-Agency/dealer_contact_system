@@ -258,6 +258,20 @@ class ParallelLaneManagerService:
 
         queue_table = self.queue_table_fqn(lane)
         eligibility_sql = self._claim_eligibility_sql(lane)
+        reclaim_query = f"""
+        UPDATE `{queue_table}`
+        SET
+          status = 'retry',
+          lease_owner = NULL,
+          lease_expires_at = NULL,
+          next_attempt_at = CURRENT_TIMESTAMP(),
+          last_error = COALESCE(last_error, 'Lane worker lease expired before completion.'),
+          updated_at = CURRENT_TIMESTAMP()
+        WHERE status = 'in_progress'
+          AND lease_expires_at IS NOT NULL
+          AND lease_expires_at <= CURRENT_TIMESTAMP()
+        """
+        self.repository.execute_statement(reclaim_query)
         update_query = f"""
         UPDATE `{queue_table}`
         SET
@@ -344,69 +358,15 @@ class ParallelLaneManagerService:
 
         if not account_keys:
             return
-        escaped_detail = self._escape_sql(detail[:4000])
-        upstream_sql = "NULL" if not upstream_lane else f"'{self._escape_sql(upstream_lane)}'"
-        for account_key in account_keys:
-            escaped_key = self._escape_sql(account_key)
-            query = f"""
-            MERGE `{self.settings.lane_execution_state_table_fqn}` AS target
-            USING (
-              SELECT
-                '{self._escape_sql(lane)}' AS lane_name,
-                '{escaped_key}' AS account_key
-            ) AS source
-            ON target.lane_name = source.lane_name
-               AND target.account_key = source.account_key
-            WHEN MATCHED THEN
-              UPDATE SET
-                state_status = '{self._escape_sql(state_status)}',
-                freshness_status = '{self._escape_sql(state_status)}',
-                last_attempt_at = CURRENT_TIMESTAMP(),
-                last_success_at = CASE
-                  WHEN '{self._escape_sql(state_status)}' = 'success' THEN CURRENT_TIMESTAMP()
-                  ELSE target.last_success_at
-                END,
-                next_eligible_at = CURRENT_TIMESTAMP(),
-                stale_after_at = TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL {self._stale_hours_for_lane(lane)} HOUR),
-                upstream_lane = {upstream_sql},
-                last_handoff_reason = '{self._escape_sql(detail[:255])}',
-                detail = '{escaped_detail}',
-                updated_at = CURRENT_TIMESTAMP()
-            WHEN NOT MATCHED THEN
-              INSERT (
-                lane_state_id,
-                lane_name,
-                account_key,
-                state_status,
-                freshness_status,
-                last_attempt_at,
-                last_success_at,
-                next_eligible_at,
-                stale_after_at,
-                upstream_lane,
-                last_handoff_reason,
-                detail,
-                created_at,
-                updated_at
-              )
-              VALUES (
-                GENERATE_UUID(),
-                source.lane_name,
-                source.account_key,
-                '{self._escape_sql(state_status)}',
-                '{self._escape_sql(state_status)}',
-                CURRENT_TIMESTAMP(),
-                CASE WHEN '{self._escape_sql(state_status)}' = 'success' THEN CURRENT_TIMESTAMP() ELSE NULL END,
-                CURRENT_TIMESTAMP(),
-                TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL {self._stale_hours_for_lane(lane)} HOUR),
-                {upstream_sql},
-                '{self._escape_sql(detail[:255])}',
-                '{escaped_detail}',
-                CURRENT_TIMESTAMP(),
-                CURRENT_TIMESTAMP()
-              )
-            """
-            self.repository.execute_statement(query)
+        chunk_size = 100
+        for start in range(0, len(account_keys), chunk_size):
+            self._update_lane_state_chunk(
+                lane=lane,
+                account_keys=account_keys[start : start + chunk_size],
+                state_status=state_status,
+                upstream_lane=upstream_lane,
+                detail=detail,
+            )
 
     def route_after_lane(self, lane: str, account_keys: list[str]) -> None:
         """Enqueue downstream lanes based on the latest canonical state."""
@@ -415,6 +375,29 @@ class ParallelLaneManagerService:
             return
 
         snapshots = self._load_account_snapshots(account_keys)
+        lane_items: dict[str, list[dict[str, object]]] = {lane_name: [] for lane_name in LANES}
+        seen_items: set[tuple[str, str, str]] = set()
+
+        def queue_downstream(
+            downstream_lane: str,
+            account_key: str,
+            reason: str,
+            priority: int,
+        ) -> None:
+            dedupe_tuple = (downstream_lane, account_key, reason)
+            if dedupe_tuple in seen_items:
+                return
+            seen_items.add(dedupe_tuple)
+            lane_items[downstream_lane].append(
+                {
+                    "account_key": account_key,
+                    "reason": reason,
+                    "source_lane": lane,
+                    "parent_lane": lane,
+                    "priority": priority,
+                }
+            )
+
         for snapshot in snapshots:
             account_key = snapshot["account_key"]
             website_exists = bool(snapshot.get("website_url"))
@@ -425,47 +408,51 @@ class ParallelLaneManagerService:
 
             if lane == LANE_VALIDATE:
                 if is_dealer:
-                    self.enqueue(LANE_CRAWL, account_key, "validated_dealer", lane, lane, 100)
-                    self.enqueue(LANE_LEAD_REFRESH, account_key, "validated_state_changed", lane, lane, 30)
+                    queue_downstream(LANE_CRAWL, account_key, "validated_dealer", 100)
+                    queue_downstream(LANE_LEAD_REFRESH, account_key, "validated_state_changed", 30)
                 continue
 
             if lane == LANE_CRAWL:
                 if blocked:
-                    self.enqueue(LANE_BLOCKED_RETRY, account_key, "crawl_blocked", lane, lane, 70)
+                    queue_downstream(LANE_BLOCKED_RETRY, account_key, "crawl_blocked", 70)
                 if missing_core or blocked:
-                    self.enqueue(LANE_AI, account_key, "crawl_incomplete", lane, lane, 65)
-                    self.enqueue(LANE_GBP, account_key, "crawl_missing_phone_or_location", lane, lane, 60)
+                    queue_downstream(LANE_AI, account_key, "crawl_incomplete", 65)
+                    queue_downstream(LANE_GBP, account_key, "crawl_missing_phone_or_location", 60)
                 if website_exists and not has_contacts:
-                    self.enqueue(LANE_CONTACT_EXTRACT, account_key, "crawl_has_website", lane, lane, 75)
-                self.enqueue(LANE_LEAD_REFRESH, account_key, "crawl_completed", lane, lane, 40)
+                    queue_downstream(LANE_CONTACT_EXTRACT, account_key, "crawl_has_website", 75)
+                queue_downstream(LANE_LEAD_REFRESH, account_key, "crawl_completed", 40)
                 continue
 
             if lane == LANE_AI:
                 if missing_core:
-                    self.enqueue(LANE_GBP, account_key, "ai_incomplete", lane, lane, 60)
+                    queue_downstream(LANE_GBP, account_key, "ai_incomplete", 60)
                 if website_exists and not has_contacts:
-                    self.enqueue(LANE_CONTACT_EXTRACT, account_key, "ai_has_website", lane, lane, 70)
-                self.enqueue(LANE_LEAD_REFRESH, account_key, "ai_completed", lane, lane, 40)
+                    queue_downstream(LANE_CONTACT_EXTRACT, account_key, "ai_has_website", 70)
+                queue_downstream(LANE_LEAD_REFRESH, account_key, "ai_completed", 40)
                 continue
 
             if lane == LANE_GBP:
                 if website_exists and not has_contacts:
-                    self.enqueue(LANE_CONTACT_EXTRACT, account_key, "gbp_has_website", lane, lane, 70)
-                self.enqueue(LANE_LEAD_REFRESH, account_key, "gbp_completed", lane, lane, 40)
+                    queue_downstream(LANE_CONTACT_EXTRACT, account_key, "gbp_has_website", 70)
+                queue_downstream(LANE_LEAD_REFRESH, account_key, "gbp_completed", 40)
                 continue
 
             if lane == LANE_BLOCKED_RETRY:
                 if blocked:
-                    self.enqueue(LANE_AI, account_key, "retry_still_blocked", lane, lane, 65)
+                    queue_downstream(LANE_AI, account_key, "retry_still_blocked", 65)
                 else:
-                    self.enqueue(LANE_CRAWL, account_key, "retry_recovered_site", lane, lane, 80)
+                    queue_downstream(LANE_CRAWL, account_key, "retry_recovered_site", 80)
                     if website_exists and not has_contacts:
-                        self.enqueue(LANE_CONTACT_EXTRACT, account_key, "retry_has_website", lane, lane, 70)
-                self.enqueue(LANE_LEAD_REFRESH, account_key, "blocked_retry_completed", lane, lane, 40)
+                        queue_downstream(LANE_CONTACT_EXTRACT, account_key, "retry_has_website", 70)
+                queue_downstream(LANE_LEAD_REFRESH, account_key, "blocked_retry_completed", 40)
                 continue
 
             if lane == LANE_CONTACT_EXTRACT:
-                self.enqueue(LANE_LEAD_REFRESH, account_key, "contacts_extracted", lane, lane, 40)
+                queue_downstream(LANE_LEAD_REFRESH, account_key, "contacts_extracted", 40)
+
+        for downstream_lane, items in lane_items.items():
+            if items:
+                self.enqueue_many(downstream_lane, items)
 
     def run_manager(self, dry_run: bool = False) -> LaneManagerResult:
         """Seed all lanes and record cutover health."""
@@ -629,6 +616,89 @@ class ParallelLaneManagerService:
           da.managed_fetch_status
         """
         return self.repository.fetch_all(query)
+
+    def _update_lane_state_chunk(
+        self,
+        *,
+        lane: str,
+        account_keys: list[str],
+        state_status: str,
+        upstream_lane: str | None,
+        detail: str,
+    ) -> None:
+        """Upsert one chunk of lane state rows in a single statement."""
+
+        if not account_keys:
+            return
+        escaped_lane = self._escape_sql(lane)
+        escaped_status = self._escape_sql(state_status)
+        escaped_detail = self._escape_sql(detail[:4000])
+        escaped_reason = self._escape_sql(detail[:255])
+        upstream_sql = "CAST(NULL AS STRING)" if not upstream_lane else f"CAST('{self._escape_sql(upstream_lane)}' AS STRING)"
+        source_rows = [
+            "SELECT "
+            f"CAST('{escaped_lane}' AS STRING) AS lane_name, "
+            f"CAST('{self._escape_sql(account_key)}' AS STRING) AS account_key, "
+            f"{upstream_sql} AS upstream_lane"
+            for account_key in account_keys
+        ]
+        query = f"""
+        MERGE `{self.settings.lane_execution_state_table_fqn}` AS target
+        USING (
+          {' UNION ALL '.join(source_rows)}
+        ) AS source
+        ON target.lane_name = source.lane_name
+           AND target.account_key = source.account_key
+        WHEN MATCHED THEN
+          UPDATE SET
+            state_status = '{escaped_status}',
+            freshness_status = '{escaped_status}',
+            last_attempt_at = CURRENT_TIMESTAMP(),
+            last_success_at = CASE
+              WHEN '{escaped_status}' = 'success' THEN CURRENT_TIMESTAMP()
+              ELSE target.last_success_at
+            END,
+            next_eligible_at = CURRENT_TIMESTAMP(),
+            stale_after_at = TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL {self._stale_hours_for_lane(lane)} HOUR),
+            upstream_lane = source.upstream_lane,
+            last_handoff_reason = '{escaped_reason}',
+            detail = '{escaped_detail}',
+            updated_at = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN
+          INSERT (
+            lane_state_id,
+            lane_name,
+            account_key,
+            state_status,
+            freshness_status,
+            last_attempt_at,
+            last_success_at,
+            next_eligible_at,
+            stale_after_at,
+            upstream_lane,
+            last_handoff_reason,
+            detail,
+            created_at,
+            updated_at
+          )
+          VALUES (
+            GENERATE_UUID(),
+            source.lane_name,
+            source.account_key,
+            '{escaped_status}',
+            '{escaped_status}',
+            CURRENT_TIMESTAMP(),
+            CASE WHEN '{escaped_status}' = 'success' THEN CURRENT_TIMESTAMP() ELSE NULL END,
+            CURRENT_TIMESTAMP(),
+            TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL {self._stale_hours_for_lane(lane)} HOUR),
+            source.upstream_lane,
+            '{escaped_reason}',
+            '{escaped_detail}',
+            CURRENT_TIMESTAMP(),
+            CURRENT_TIMESTAMP()
+          )
+        """
+        self.repository.execute_statement(query)
 
     def _missing_core_details(self, snapshot: dict[str, object]) -> bool:
         """Return whether phone or location still looks incomplete."""
@@ -851,6 +921,8 @@ class ParallelLaneManagerService:
 class ParallelLaneWorkerService:
     """Run one parallel enrichment lane at a time."""
 
+    LANE_LOCK_PREFIX = "lane_worker_lock"
+
     def __init__(self, repository: BigQueryRepository, settings: Settings) -> None:
         self.repository = repository
         self.settings = settings
@@ -884,6 +956,16 @@ class ParallelLaneWorkerService:
             }
 
         worker_id = str(uuid.uuid4())
+        if not self._acquire_lane_lock(lane, worker_id):
+            return {
+                "lane": lane,
+                "status": "skipped",
+                "claimed_count": 0,
+                "succeeded_count": 0,
+                "failed_count": 0,
+                "detail": f"Skipped {lane} because another execution is still active.",
+            }
+
         pipeline_run_id = self.run_logger.start_run(
             task_type=lane,
             worker_id=worker_id,
@@ -945,6 +1027,8 @@ class ParallelLaneWorkerService:
                 run_notes=error_message,
             )
             raise
+        finally:
+            self._record_lane_lock_status(lane=lane, status="idle", detail=f"worker:{worker_id}")
 
     def _dispatch_lane(self, lane: str, account_keys: list[str]) -> None:
         """Dispatch one lane to the underlying enrichment service."""
@@ -984,3 +1068,105 @@ class ParallelLaneWorkerService:
                 )
             return
         raise ValueError(f"Unsupported lane: {lane}")
+
+    def _acquire_lane_lock(self, lane: str, worker_id: str) -> bool:
+        """Acquire a coarse per-lane lock so schedulers do not overlap the same worker."""
+
+        lock_id = self._lane_lock_id(lane)
+        detail = self._escape_sql(f"worker:{worker_id}")
+        grace_minutes = max(self.settings.worker_lease_minutes, 15)
+        query = f"""
+        MERGE `{self.settings.sync_targets_table_fqn}` AS target
+        USING (
+          SELECT
+            '{lock_id}' AS sync_target_id,
+            '{self._escape_sql(lock_id)}' AS target_system,
+            'lane_worker' AS target_entity_type,
+            '{self._escape_sql(lane)}' AS target_entity_id,
+            'system' AS source_record_type,
+            '{lock_id}' AS source_record_id
+        ) AS source
+        ON target.sync_target_id = source.sync_target_id
+        WHEN MATCHED
+          AND (
+            target.sync_status != 'running'
+            OR target.updated_at IS NULL
+            OR target.updated_at < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {grace_minutes} MINUTE)
+          )
+        THEN
+          UPDATE SET
+            sync_status = 'running',
+            sync_detail = '{detail}',
+            last_synced_at = CURRENT_TIMESTAMP(),
+            updated_at = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN
+          INSERT (
+            sync_target_id,
+            target_system,
+            target_entity_type,
+            target_entity_id,
+            source_record_type,
+            source_record_id,
+            sync_status,
+            sync_detail,
+            last_synced_at,
+            created_at,
+            updated_at
+          )
+          VALUES (
+            source.sync_target_id,
+            source.target_system,
+            source.target_entity_type,
+            source.target_entity_id,
+            source.source_record_type,
+            source.source_record_id,
+            'running',
+            '{detail}',
+            CURRENT_TIMESTAMP(),
+            CURRENT_TIMESTAMP(),
+            CURRENT_TIMESTAMP()
+          )
+        """
+        self.repository.execute_statement(query)
+        row = self.repository.fetch_one(
+            f"""
+            SELECT sync_status, sync_detail
+            FROM `{self.settings.sync_targets_table_fqn}`
+            WHERE sync_target_id = '{lock_id}'
+            """
+        )
+        return (
+            str(row.get("sync_status") or "") == "running"
+            and str(row.get("sync_detail") or "") == f"worker:{worker_id}"
+        )
+
+    def _record_lane_lock_status(self, lane: str, status: str, detail: str) -> None:
+        """Persist the latest per-lane worker heartbeat so health checks stay truthful."""
+
+        lock_id = self._lane_lock_id(lane)
+        escaped_detail = self._escape_sql(detail[:4000])
+        query = f"""
+        UPDATE `{self.settings.sync_targets_table_fqn}`
+        SET
+          sync_status = '{self._escape_sql(status)}',
+          sync_detail = '{escaped_detail}',
+          last_synced_at = CURRENT_TIMESTAMP(),
+          updated_at = CURRENT_TIMESTAMP()
+        WHERE sync_target_id = '{lock_id}'
+        """
+        self.repository.execute_statement(query)
+
+    def _lane_lock_id(self, lane: str) -> str:
+        """Return the sync-target key used as a coarse lock for one lane."""
+
+        return f"{self.LANE_LOCK_PREFIX}_{lane}"
+
+    def _escape_sql(self, value: str) -> str:
+        """Escape one string for a BigQuery string literal."""
+
+        return (
+            value.replace("\\", "\\\\")
+            .replace("'", "\\'")
+            .replace("\r", "\\r")
+            .replace("\n", "\\n")
+        )

@@ -1102,7 +1102,8 @@ class DashboardService:
           SUM(IF(started_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 24 HOUR), IFNULL(succeeded_count, 0), 0)) AS succeeded_24h,
           SUM(IF(started_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 24 HOUR), IFNULL(failed_count, 0), 0)) AS failed_24h,
           MAX(IF(run_status = 'completed', completed_at, NULL)) AS last_success_at,
-          MAX(started_at) AS last_started_at
+          MAX(started_at) AS last_started_at,
+          COUNTIF(run_status = 'running') AS running_count
         FROM `{table_fqn}`
         GROUP BY lane_key
         """
@@ -1196,24 +1197,30 @@ class DashboardService:
         succeeded_24h = int(run_row.get("succeeded_24h", 0) or 0)
         failed_24h = int(run_row.get("failed_24h", 0) or 0)
         last_success_at = run_row.get("last_success_at")
+        last_started_at = run_row.get("last_started_at")
+        running_count = int(run_row.get("running_count", 0) or 0)
 
         status = self._classify_queue_lane_status(
             last_success_at=last_success_at,
+            last_started_at=last_started_at,
             stale_hours=stale_hours,
             queued_count=queued_count,
             due_count=due_count,
+            in_progress_count=in_progress_count,
+            running_count=running_count,
             succeeded_24h=succeeded_24h,
             failed_24h=failed_24h,
         )
         detail = (
             f"{queued_count:,} queued, {due_count:,} due, {processed_24h:,} processed in the last 24 hours, "
-            f"{failed_24h:,} failed, last success {self._format_timestamp(last_success_at)}."
+            f"{failed_24h:,} failed, {in_progress_count:,} in progress, last success {self._format_timestamp(last_success_at)}."
         )
         return {
             "lane_key": lane_key,
             "label": label,
             "status": status,
             "last_success_at": self._format_timestamp(last_success_at),
+            "last_started_at": self._format_timestamp(last_started_at),
             "runs_24h": runs_24h,
             "processed_24h": processed_24h,
             "succeeded_24h": succeeded_24h,
@@ -1221,6 +1228,7 @@ class DashboardService:
             "queued_count": queued_count,
             "due_count": due_count,
             "in_progress_count": in_progress_count,
+            "running_count": running_count,
             "detail": detail,
         }
 
@@ -1358,23 +1366,44 @@ class DashboardService:
         self,
         *,
         last_success_at: Any,
+        last_started_at: Any,
         stale_hours: int,
         queued_count: int,
         due_count: int,
+        in_progress_count: int,
+        running_count: int,
         succeeded_24h: int,
         failed_24h: int,
     ) -> str:
         """Return one normalized process-health state for a queue-backed lane."""
 
-        if due_count > 0 and self._is_timestamp_stale(last_success_at, stale_hours):
-            return "stale"
-        if due_count > 0 and failed_24h > 0 and succeeded_24h == 0:
-            return "failed"
         if due_count == 0:
-            return "flat"
+            return "healthy" if in_progress_count > 0 or running_count > 0 else "flat"
+        if due_count > 0 and failed_24h > 0 and succeeded_24h == 0 and not self._has_recent_running_activity(last_started_at, in_progress_count, running_count):
+            return "failed"
+        if due_count > 0 and self._is_timestamp_stale(last_success_at, stale_hours):
+            if self._has_recent_running_activity(last_started_at, in_progress_count, running_count):
+                return "backlogged"
+            return "stale"
         if queued_count > 0 and (succeeded_24h == 0 or due_count > max(succeeded_24h * 10, 25)):
             return "backlogged"
         return "healthy"
+
+    def _has_recent_running_activity(
+        self,
+        timestamp_value: Any,
+        in_progress_count: int,
+        running_count: int,
+    ) -> bool:
+        """Return whether a lane appears to have an active run inside the grace window."""
+
+        if in_progress_count <= 0 and running_count <= 0:
+            return False
+        timestamp = self._coerce_datetime(timestamp_value)
+        if not timestamp:
+            return False
+        elapsed_seconds = (datetime.utcnow() - timestamp.replace(tzinfo=None)).total_seconds()
+        return elapsed_seconds <= (self.settings.process_watchdog_running_grace_minutes * 60)
 
     def _is_timestamp_stale(self, timestamp_value: Any, stale_hours: int) -> bool:
         """Return whether the timestamp is older than the allowed window."""

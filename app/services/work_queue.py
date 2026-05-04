@@ -534,6 +534,22 @@ class WorkQueueService:
     ) -> list[dict[str, str]]:
         """Lease a batch of queue rows to this worker."""
 
+        reclaim_query = f"""
+        UPDATE `{self.settings.account_work_queue_table_fqn}`
+        SET
+          status = 'retry',
+          lease_owner = NULL,
+          lease_expires_at = NULL,
+          next_attempt_at = CURRENT_TIMESTAMP(),
+          last_error = COALESCE(last_error, 'Worker lease expired before completion.'),
+          updated_at = CURRENT_TIMESTAMP()
+        WHERE task_type = '{task_type}'
+          AND status = 'in_progress'
+          AND lease_expires_at IS NOT NULL
+          AND lease_expires_at <= CURRENT_TIMESTAMP()
+        """
+        self.repository.execute_statement(reclaim_query)
+
         task_specific_eligibility_sql = self._claim_eligibility_sql(task_type)
         update_query = f"""
         UPDATE `{self.settings.account_work_queue_table_fqn}`
