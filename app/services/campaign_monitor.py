@@ -16,6 +16,14 @@ logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
+class SegmentDefinition:
+    """Definition for one Campaign Monitor segment and its rules."""
+
+    title: str
+    rules: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
 class CampaignMonitorHealthResult:
     """Simple result from one Campaign Monitor health check."""
 
@@ -67,10 +75,34 @@ class CampaignMonitorService:
         "Dealer Classification": "Text",
     }
     STATIC_SEGMENT_DEFINITIONS = (
-        ("Automation Canada Subscribers", "Country", "Canada"),
-        ("Automation United States Subscribers", "Country", "United States"),
-        ("Automation Current Clients", "Audience Type", "current_client"),
-        ("Automation Prospects", "Audience Type", "prospect"),
+        SegmentDefinition(
+            title="Automation Canada Subscribers",
+            rules=(("Country", "Canada"),),
+        ),
+        SegmentDefinition(
+            title="Automation United States Subscribers",
+            rules=(("Country", "United States"),),
+        ),
+        SegmentDefinition(
+            title="Automation Canada Current Clients",
+            rules=(("Country", "Canada"), ("Audience Type", "current_client")),
+        ),
+        SegmentDefinition(
+            title="Automation United States Current Clients",
+            rules=(("Country", "United States"), ("Audience Type", "current_client")),
+        ),
+        SegmentDefinition(
+            title="Automation Canada Prospects",
+            rules=(("Country", "Canada"), ("Audience Type", "prospect")),
+        ),
+        SegmentDefinition(
+            title="Automation United States Prospects",
+            rules=(("Country", "United States"), ("Audience Type", "prospect")),
+        ),
+    )
+    LEGACY_SEGMENT_TITLES = (
+        "Automation Current Clients",
+        "Automation Prospects",
     )
 
     def __init__(self, repository: BigQueryRepository, settings: Settings) -> None:
@@ -201,13 +233,17 @@ class CampaignMonitorService:
 
         field_map = self._ensure_custom_fields(list_id, dry_run=dry_run)
         existing_segments = self._api_get(f"/lists/{list_id}/segments.json") if not dry_run else []
+        if not dry_run:
+            self._remove_legacy_segments(list_id=list_id, segments=existing_segments)
+            existing_segments = self._api_get(f"/lists/{list_id}/segments.json")
         existing_names = {str(item.get("Title", "")).strip() for item in existing_segments}
         created_segments = 0
 
-        for segment_name, rule_type, clause in self._build_segment_definitions(
+        for definition in self._build_segment_definitions(
             brands=brands,
             field_map=field_map,
         ):
+            segment_name = definition.title
             if segment_name in existing_names:
                 continue
             created_segments += 1
@@ -222,6 +258,7 @@ class CampaignMonitorService:
                                 "RuleType": rule_type,
                                 "Clause": clause,
                             }
+                            for rule_type, clause in definition.rules
                         ]
                     }
                 ],
@@ -755,26 +792,45 @@ class CampaignMonitorService:
         self,
         brands: list[str],
         field_map: dict[str, str],
-    ) -> list[tuple[str, str, str]]:
+    ) -> list[SegmentDefinition]:
         """Build OEM plus geography/audience segment definitions."""
 
-        definitions: list[tuple[str, str, str]] = []
+        definitions: list[SegmentDefinition] = []
         oem_key = field_map.get("OEM", "[OEM]")
 
         for brand in brands:
             definitions.append(
-                (
-                    f"Automation {brand} Subscribers",
-                    oem_key,
-                    f"EQUALS {brand}",
+                SegmentDefinition(
+                    title=f"Automation {brand} Subscribers",
+                    rules=((oem_key, f"EQUALS {brand}"),),
                 )
             )
 
-        for segment_name, field_name, value in self.STATIC_SEGMENT_DEFINITIONS:
-            field_key = field_map.get(field_name, f"[{field_name}]")
-            definitions.append((segment_name, field_key, f"EQUALS {value}"))
+        for definition in self.STATIC_SEGMENT_DEFINITIONS:
+            definitions.append(
+                SegmentDefinition(
+                    title=definition.title,
+                    rules=tuple(
+                        (
+                            field_map.get(field_name, f"[{field_name}]"),
+                            f"EQUALS {value}",
+                        )
+                        for field_name, value in definition.rules
+                    ),
+                )
+            )
 
         return definitions
+
+    def _remove_legacy_segments(self, list_id: str, segments: list[dict[str, Any]]) -> None:
+        """Delete legacy generic audience segments that overlap geo-specific ones."""
+
+        for segment in segments:
+            title = str(segment.get("Title", "")).strip()
+            segment_id = str(segment.get("SegmentID", "")).strip()
+            if title not in self.LEGACY_SEGMENT_TITLES or not segment_id:
+                continue
+            self._api_delete(f"/segments/{segment_id}.json")
 
     def _api_get(self, path: str) -> Any:
         """Send a GET request to Campaign Monitor and return the decoded JSON."""
@@ -810,3 +866,18 @@ class CampaignMonitorService:
         if response.headers.get("content-type", "").startswith("application/json"):
             return response.json()
         return response.text.strip().strip('"')
+
+    def _api_delete(
+        self,
+        path: str,
+        expected_statuses: tuple[int, ...] = (200, 202),
+    ) -> None:
+        """Send a DELETE request to Campaign Monitor."""
+
+        response = requests.delete(
+            f"{self.BASE_URL}{path}",
+            auth=(self.settings.campaign_monitor_api_key, "x"),
+            timeout=self.settings.request_timeout_seconds,
+        )
+        if response.status_code not in expected_statuses:
+            response.raise_for_status()
