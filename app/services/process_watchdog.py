@@ -71,6 +71,15 @@ class ProcessWatchdogService:
 
     CONNECTION_RECORD_ID = "process_watchdog"
     MAIN_TASKS = ("validate", "enrich", "enrich_gbp", "ai_account_facts", "extract_contacts", "retry_blocked")
+    PARALLEL_LANE_RESTART_COOLDOWN_MINUTES = {
+        "validate": 45,
+        "crawl": 30,
+        "gbp": 45,
+        "ai": 45,
+        "contact_extract": 30,
+        "blocked_retry": 45,
+        "lead_refresh": 30,
+    }
 
     def __init__(
         self,
@@ -543,11 +552,45 @@ class ProcessWatchdogService:
             return WatchdogCheck(fallback_name, "warning", fallback_detail)
         status = str(row.get("status") or "warning").lower()
         detail = str(row.get("detail") or fallback_detail)
+        if status in {"stale", "failed"} and self._has_recent_lane_start(row):
+            status = "warning"
+            detail = f"{detail} Recent lane activity was detected, so watchdog restart is deferred."
         if status == "backlogged":
             status = "warning"
         if status == "flat":
             status = "healthy"
         return WatchdogCheck(str(row.get("label") or fallback_name), status, detail)
+
+    def _has_recent_lane_start(self, row: dict[str, Any]) -> bool:
+        """Return whether the lane has started recently enough to avoid forced relaunch."""
+
+        lane_key = str(row.get("lane_key") or "").strip()
+        if not lane_key:
+            return False
+        cooldown_minutes = self.PARALLEL_LANE_RESTART_COOLDOWN_MINUTES.get(
+            lane_key,
+            self.settings.process_watchdog_running_grace_minutes,
+        )
+        last_started_at = row.get("last_started_at")
+        if last_started_at and self._started_within_minutes(last_started_at, cooldown_minutes):
+            return True
+        in_progress_count = int(row.get("in_progress_count", 0) or 0)
+        running_count = int(row.get("running_count", 0) or 0)
+        return (in_progress_count > 0 or running_count > 0) and self._started_within_minutes(
+            last_started_at,
+            cooldown_minutes,
+        )
+
+    def _started_within_minutes(self, timestamp_value: Any, minutes: int) -> bool:
+        """Return whether the given timestamp is within the requested minute window."""
+
+        if minutes <= 0:
+            return False
+        timestamp = self._coerce_datetime(timestamp_value)
+        if not timestamp:
+            return False
+        elapsed_seconds = (datetime.now(timezone.utc) - timestamp).total_seconds()
+        return elapsed_seconds <= (minutes * 60)
 
     def _record_status(self, sync_status: str, sync_detail: str) -> None:
         """Upsert the latest watchdog status into sync_targets for dashboard visibility."""

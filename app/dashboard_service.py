@@ -1080,20 +1080,36 @@ class DashboardService:
     def _get_single_queue_rollup(self, table_fqn: str, lane_key: str) -> dict[str, Any]:
         """Return one queue rollup row for a dedicated single-lane queue table."""
 
-        query = f"""
-        SELECT
-          '{lane_key}' AS lane_key,
-          COUNTIF(status IN ('pending', 'retry')) AS queued_count,
-          COUNTIF(status IN ('pending', 'retry') AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP())) AS due_count,
-          COUNTIF(status IN ('pending', 'retry') AND work_phase = 'new_discovery_first_pass') AS discovery_first_pass_count,
-          COUNTIF(status IN ('pending', 'retry') AND work_phase = 'main_list_first_pass') AS main_list_first_pass_count,
-          COUNTIF(status IN ('pending', 'retry') AND work_phase = 'follow_up') AS follow_up_count,
-          COUNTIF(status IN ('pending', 'retry') AND work_phase = 'retry') AS retry_count,
-          COUNTIF(status = 'in_progress') AS in_progress_count,
-          COUNTIF(status = 'completed') AS completed_count,
-          COUNTIF(status = 'failed') AS failed_count
-        FROM `{table_fqn}`
-        """
+        if lane_key == "search" or table_fqn == self.settings.domain_discovery_queue_table_fqn:
+            query = f"""
+            SELECT
+              '{lane_key}' AS lane_key,
+              COUNTIF(status IN ('pending', 'retry')) AS queued_count,
+              COUNTIF(status IN ('pending', 'retry') AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP())) AS due_count,
+              0 AS discovery_first_pass_count,
+              0 AS main_list_first_pass_count,
+              0 AS follow_up_count,
+              0 AS retry_count,
+              COUNTIF(status = 'in_progress') AS in_progress_count,
+              COUNTIF(status = 'completed') AS completed_count,
+              COUNTIF(status = 'failed') AS failed_count
+            FROM `{table_fqn}`
+            """
+        else:
+            query = f"""
+            SELECT
+              '{lane_key}' AS lane_key,
+              COUNTIF(status IN ('pending', 'retry')) AS queued_count,
+              COUNTIF(status IN ('pending', 'retry') AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP())) AS due_count,
+              COUNTIF(status IN ('pending', 'retry') AND work_phase = 'new_discovery_first_pass') AS discovery_first_pass_count,
+              COUNTIF(status IN ('pending', 'retry') AND work_phase = 'main_list_first_pass') AS main_list_first_pass_count,
+              COUNTIF(status IN ('pending', 'retry') AND work_phase = 'follow_up') AS follow_up_count,
+              COUNTIF(status IN ('pending', 'retry') AND work_phase = 'retry') AS retry_count,
+              COUNTIF(status = 'in_progress') AS in_progress_count,
+              COUNTIF(status = 'completed') AS completed_count,
+              COUNTIF(status = 'failed') AS failed_count
+            FROM `{table_fqn}`
+            """
         return self.repository.fetch_one(query)
 
     def _get_run_rollups(self, table_fqn: str, lane_key_value: str) -> dict[str, dict[str, Any]]:
