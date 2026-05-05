@@ -147,6 +147,10 @@
               <th>Runs 24h</th>
               <th>Processed 24h</th>
               <th>Failed 24h</th>
+              <th>Discovery First Pass</th>
+              <th>Main-List First Pass</th>
+              <th>Follow-Up</th>
+              <th>Retry</th>
               <th>Due Work</th>
               <th>Queued</th>
             </tr>
@@ -163,6 +167,10 @@
               <td>{{ "{:,}".format(row.runs_24h or 0) }}</td>
               <td>{{ "{:,}".format(row.processed_24h or 0) }}</td>
               <td>{{ "{:,}".format(row.failed_24h or 0) }}</td>
+              <td>{{ "{:,}".format(row.discovery_first_pass_count or 0) }}</td>
+              <td>{{ "{:,}".format(row.main_list_first_pass_count or 0) }}</td>
+              <td>{{ "{:,}".format(row.follow_up_count or 0) }}</td>
+              <td>{{ "{:,}".format(row.retry_count or 0) }}</td>
               <td>{{ "{:,}".format(row.due_count or 0) }}</td>
               <td>{{ "{:,}".format(row.queued_count or 0) }}</td>
             </tr>
@@ -170,6 +178,37 @@
           </tbody>
         </table>
       </section>
+
+      {% if data.frontier_rows %}
+      <section class="card">
+        <div class="section-head">
+          <h2>Frontier Priority</h2>
+          <p>Discovery-promoted first pass should drain before untouched main-list work, and both should outrank retries.</p>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Lane</th>
+              <th>Discovery First Pass</th>
+              <th>Main-List First Pass</th>
+              <th>Follow-Up</th>
+              <th>Retry</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in data.frontier_rows %}
+            <tr>
+              <td>{{ row.lane_label }}</td>
+              <td>{{ "{:,}".format(row.discovery_first_pass_count or 0) }}</td>
+              <td>{{ "{:,}".format(row.main_list_first_pass_count or 0) }}</td>
+              <td>{{ "{:,}".format(row.follow_up_count or 0) }}</td>
+              <td>{{ "{:,}".format(row.retry_count or 0) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+      {% endif %}
 
       <section class="card">
         <div class="section-head">

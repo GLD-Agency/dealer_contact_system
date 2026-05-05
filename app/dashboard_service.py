@@ -57,6 +57,7 @@ class DashboardService:
             "role_family_counts": self._get_role_family_counts(),
             "ai_provider_counts": self._get_ai_provider_counts(),
             "queue_rows": self._get_queue_rows(),
+            "frontier_rows": self._get_frontier_rows(),
             "recent_runs": self._get_recent_runs(),
             "recent_discovery_runs": self._get_recent_discovery_runs(),
             "blocked_accounts": self._get_blocked_accounts(),
@@ -1084,6 +1085,10 @@ class DashboardService:
           '{lane_key}' AS lane_key,
           COUNTIF(status IN ('pending', 'retry')) AS queued_count,
           COUNTIF(status IN ('pending', 'retry') AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP())) AS due_count,
+          COUNTIF(status IN ('pending', 'retry') AND work_phase = 'new_discovery_first_pass') AS discovery_first_pass_count,
+          COUNTIF(status IN ('pending', 'retry') AND work_phase = 'main_list_first_pass') AS main_list_first_pass_count,
+          COUNTIF(status IN ('pending', 'retry') AND work_phase = 'follow_up') AS follow_up_count,
+          COUNTIF(status IN ('pending', 'retry') AND work_phase = 'retry') AS retry_count,
           COUNTIF(status = 'in_progress') AS in_progress_count,
           COUNTIF(status = 'completed') AS completed_count,
           COUNTIF(status = 'failed') AS failed_count
@@ -1192,6 +1197,10 @@ class DashboardService:
         queued_count = int(queue_row.get("queued_count", 0) or 0)
         due_count = int(queue_row.get("due_count", 0) or 0)
         in_progress_count = int(queue_row.get("in_progress_count", 0) or 0)
+        discovery_first_pass_count = int(queue_row.get("discovery_first_pass_count", 0) or 0)
+        main_list_first_pass_count = int(queue_row.get("main_list_first_pass_count", 0) or 0)
+        follow_up_count = int(queue_row.get("follow_up_count", 0) or 0)
+        retry_count = int(queue_row.get("retry_count", 0) or 0)
         runs_24h = int(run_row.get("runs_24h", 0) or 0)
         processed_24h = int(run_row.get("processed_24h", 0) or 0)
         succeeded_24h = int(run_row.get("succeeded_24h", 0) or 0)
@@ -1213,7 +1222,10 @@ class DashboardService:
         )
         detail = (
             f"{queued_count:,} queued, {due_count:,} due, {processed_24h:,} processed in the last 24 hours, "
-            f"{failed_24h:,} failed, {in_progress_count:,} in progress, last success {self._format_timestamp(last_success_at)}."
+            f"{failed_24h:,} failed, {in_progress_count:,} in progress. "
+            f"Discovery first-pass {discovery_first_pass_count:,}, main-list first-pass {main_list_first_pass_count:,}, "
+            f"follow-up {follow_up_count:,}, retry {retry_count:,}. "
+            f"Last success {self._format_timestamp(last_success_at)}."
         )
         return {
             "lane_key": lane_key,
@@ -1227,6 +1239,10 @@ class DashboardService:
             "failed_24h": failed_24h,
             "queued_count": queued_count,
             "due_count": due_count,
+            "discovery_first_pass_count": discovery_first_pass_count,
+            "main_list_first_pass_count": main_list_first_pass_count,
+            "follow_up_count": follow_up_count,
+            "retry_count": retry_count,
             "in_progress_count": in_progress_count,
             "running_count": running_count,
             "detail": detail,
@@ -1787,6 +1803,16 @@ class DashboardService:
     def _get_queue_rows(self) -> list[dict[str, Any]]:
         """Return queue status counts for each worker type."""
 
+        if self.settings.parallel_enrichment_enabled:
+            return [
+                self._parallel_queue_row("validate", self.settings.validate_queue_table_fqn),
+                self._parallel_queue_row("crawl", self.settings.crawl_queue_table_fqn),
+                self._parallel_queue_row("gbp", self.settings.gbp_queue_table_fqn),
+                self._parallel_queue_row("ai", self.settings.ai_queue_table_fqn),
+                self._parallel_queue_row("contact_extract", self.settings.contact_extract_queue_table_fqn),
+                self._parallel_queue_row("blocked_retry", self.settings.blocked_retry_queue_table_fqn),
+                self._parallel_queue_row("lead_refresh", self.settings.lead_refresh_queue_table_fqn),
+            ]
         query = f"""
         SELECT
           task_type,
@@ -1799,6 +1825,53 @@ class DashboardService:
         ORDER BY task_type ASC
         """
         return self.repository.fetch_all(query)
+
+    def _parallel_queue_row(self, lane_key: str, table_fqn: str) -> dict[str, Any]:
+        """Return one queue throughput row for a dedicated parallel lane table."""
+
+        row = self.repository.fetch_one(
+            f"""
+            SELECT
+              '{lane_key}' AS task_type,
+              COUNTIF(status IN ('pending', 'retry')) AS queued_count,
+              COUNTIF(status = 'in_progress') AS in_progress_count,
+              COUNTIF(status = 'completed') AS completed_count,
+              COUNTIF(status = 'failed') AS failed_count
+            FROM `{table_fqn}`
+            """
+        )
+        return row
+
+    def _get_frontier_rows(self) -> list[dict[str, Any]]:
+        """Return phase-aware queue counts so first-pass vs retry is visible."""
+
+        if not self.settings.parallel_enrichment_enabled:
+            return []
+        rows = [
+            ("Validate", self.settings.validate_queue_table_fqn),
+            ("Crawl", self.settings.crawl_queue_table_fqn),
+            ("GBP Enrichment", self.settings.gbp_queue_table_fqn),
+            ("AI Retrieval", self.settings.ai_queue_table_fqn),
+            ("Contact Extraction", self.settings.contact_extract_queue_table_fqn),
+            ("Blocked Retry", self.settings.blocked_retry_queue_table_fqn),
+            ("Lead Refresh", self.settings.lead_refresh_queue_table_fqn),
+        ]
+        output: list[dict[str, Any]] = []
+        for label, table_fqn in rows:
+            output.append(
+                self.repository.fetch_one(
+                    f"""
+                    SELECT
+                      '{label}' AS lane_label,
+                      COUNTIF(status IN ('pending', 'retry') AND work_phase = 'new_discovery_first_pass') AS discovery_first_pass_count,
+                      COUNTIF(status IN ('pending', 'retry') AND work_phase = 'main_list_first_pass') AS main_list_first_pass_count,
+                      COUNTIF(status IN ('pending', 'retry') AND work_phase = 'follow_up') AS follow_up_count,
+                      COUNTIF(status IN ('pending', 'retry') AND work_phase = 'retry') AS retry_count
+                    FROM `{table_fqn}`
+                    """
+                )
+            )
+        return output
 
     def _get_recent_runs(self) -> list[dict[str, Any]]:
         """Return the most recent worker runs."""

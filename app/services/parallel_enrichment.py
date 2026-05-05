@@ -32,6 +32,10 @@ LANE_AI = "ai"
 LANE_CONTACT_EXTRACT = "contact_extract"
 LANE_BLOCKED_RETRY = "blocked_retry"
 LANE_LEAD_REFRESH = "lead_refresh"
+PHASE_DISCOVERY_FIRST_PASS = "new_discovery_first_pass"
+PHASE_MAIN_LIST_FIRST_PASS = "main_list_first_pass"
+PHASE_FOLLOW_UP = "follow_up"
+PHASE_RETRY = "retry"
 LANES = (
     LANE_VALIDATE,
     LANE_CRAWL,
@@ -107,7 +111,7 @@ class ParallelLaneManagerService:
 
         rows = self.repository.fetch_all(
             f"""
-            SELECT account_key, priority, reason
+            SELECT account_key, priority, reason, work_phase, intake_source, intake_rank
             FROM ({self._seed_source_query(lane)})
             LIMIT {MANAGER_SEED_LIMIT_PER_LANE}
             """
@@ -124,6 +128,9 @@ class ParallelLaneManagerService:
                     "source_lane": "seed",
                     "parent_lane": None,
                     "priority": int(row["priority"]),
+                    "work_phase": str(row.get("work_phase") or PHASE_MAIN_LIST_FIRST_PASS),
+                    "intake_source": str(row.get("intake_source") or "primary_import"),
+                    "intake_rank": int(row.get("intake_rank") or 0),
                 }
                 for row in rows
             ],
@@ -150,6 +157,9 @@ class ParallelLaneManagerService:
                     "source_lane": source_lane,
                     "parent_lane": parent_lane,
                     "priority": priority,
+                    "work_phase": PHASE_FOLLOW_UP,
+                    "intake_source": "other",
+                    "intake_rank": 0,
                 }
             ],
         )
@@ -176,6 +186,9 @@ class ParallelLaneManagerService:
             parent_lane = item.get("parent_lane")
             priority = item.get("priority")
             priority_value = int(priority) if priority is not None else self._default_priority(lane)
+            work_phase = str(item.get("work_phase") or PHASE_FOLLOW_UP)
+            intake_source = str(item.get("intake_source") or "other")
+            intake_rank = int(item.get("intake_rank") or 0)
             parent_sql = "CAST(NULL AS STRING)" if not parent_lane else f"CAST('{self._escape_sql(str(parent_lane))}' AS STRING)"
             source_rows.append(
                 "SELECT "
@@ -184,7 +197,10 @@ class ParallelLaneManagerService:
                 f"CAST('{self._escape_sql(reason)}' AS STRING) AS reason, "
                 f"CAST('{self._escape_sql(source_lane)}' AS STRING) AS source_lane, "
                 f"{parent_sql} AS parent_lane, "
-                f"CAST({priority_value} AS INT64) AS priority"
+                f"CAST({priority_value} AS INT64) AS priority, "
+                f"CAST('{self._escape_sql(work_phase)}' AS STRING) AS work_phase, "
+                f"CAST('{self._escape_sql(intake_source)}' AS STRING) AS intake_source, "
+                f"CAST({intake_rank} AS INT64) AS intake_rank"
             )
         query = f"""
         MERGE `{queue_table}` AS target
@@ -199,7 +215,11 @@ class ParallelLaneManagerService:
             priority = GREATEST(IFNULL(target.priority, 0), source.priority),
             source_lane = source.source_lane,
             parent_lane = source.parent_lane,
+            work_phase = source.work_phase,
+            intake_source = source.intake_source,
+            intake_rank = source.intake_rank,
             next_attempt_at = CURRENT_TIMESTAMP(),
+            retry_due_at = NULL,
             lease_owner = NULL,
             lease_expires_at = NULL,
             completed_at = NULL,
@@ -210,6 +230,15 @@ class ParallelLaneManagerService:
             priority = GREATEST(IFNULL(target.priority, 0), source.priority),
             source_lane = source.source_lane,
             parent_lane = source.parent_lane,
+            work_phase = CASE
+              WHEN target.work_phase = '{PHASE_RETRY}' AND source.work_phase != '{PHASE_RETRY}' THEN target.work_phase
+              ELSE source.work_phase
+            END,
+            intake_source = COALESCE(NULLIF(target.intake_source, ''), source.intake_source),
+            intake_rank = CASE
+              WHEN IFNULL(target.intake_rank, 0) = 0 THEN source.intake_rank
+              ELSE target.intake_rank
+            END,
             updated_at = CURRENT_TIMESTAMP()
         WHEN NOT MATCHED THEN
           INSERT (
@@ -222,10 +251,15 @@ class ParallelLaneManagerService:
             dedupe_key,
             parent_lane,
             source_lane,
+            work_phase,
+            intake_source,
+            intake_rank,
             lease_owner,
             lease_expires_at,
             last_attempt_at,
+            first_attempt_at,
             next_attempt_at,
+            retry_due_at,
             completed_at,
             last_error,
             created_at,
@@ -241,10 +275,15 @@ class ParallelLaneManagerService:
             source.dedupe_key,
             source.parent_lane,
             source.source_lane,
+            source.work_phase,
+            source.intake_source,
+            source.intake_rank,
+            NULL,
             NULL,
             NULL,
             NULL,
             CURRENT_TIMESTAMP(),
+            NULL,
             NULL,
             NULL,
             CURRENT_TIMESTAMP(),
@@ -262,9 +301,11 @@ class ParallelLaneManagerService:
         UPDATE `{queue_table}`
         SET
           status = 'retry',
+          work_phase = '{PHASE_RETRY}',
           lease_owner = NULL,
           lease_expires_at = NULL,
           next_attempt_at = CURRENT_TIMESTAMP(),
+          retry_due_at = CURRENT_TIMESTAMP(),
           last_error = COALESCE(last_error, 'Lane worker lease expired before completion.'),
           updated_at = CURRENT_TIMESTAMP()
         WHERE status = 'in_progress'
@@ -279,6 +320,7 @@ class ParallelLaneManagerService:
           lease_owner = '{self._escape_sql(worker_id)}',
           lease_expires_at = TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL {self.settings.worker_lease_minutes} MINUTE),
           last_attempt_at = CURRENT_TIMESTAMP(),
+          first_attempt_at = COALESCE(first_attempt_at, CURRENT_TIMESTAMP()),
           attempt_count = IFNULL(attempt_count, 0) + 1,
           updated_at = CURRENT_TIMESTAMP()
         WHERE work_item_id IN (
@@ -288,7 +330,19 @@ class ParallelLaneManagerService:
             AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP())
             AND (lease_expires_at IS NULL OR lease_expires_at <= CURRENT_TIMESTAMP())
             {eligibility_sql}
-          ORDER BY priority DESC, created_at ASC
+          ORDER BY
+            CASE work_phase
+              WHEN '{PHASE_DISCOVERY_FIRST_PASS}' THEN 1
+              WHEN '{PHASE_MAIN_LIST_FIRST_PASS}' THEN 2
+              WHEN '{PHASE_FOLLOW_UP}' THEN 3
+              ELSE 4
+            END ASC,
+            priority DESC,
+            CASE
+              WHEN work_phase = '{PHASE_DISCOVERY_FIRST_PASS}' THEN COALESCE(intake_rank, 0)
+              ELSE COALESCE(intake_rank, 9223372036854775807)
+            END ASC,
+            created_at ASC
           LIMIT {batch_size}
         )
         """
@@ -316,6 +370,7 @@ class ParallelLaneManagerService:
           lease_owner = NULL,
           lease_expires_at = NULL,
           completed_at = CURRENT_TIMESTAMP(),
+          retry_due_at = NULL,
           last_error = NULL,
           updated_at = CURRENT_TIMESTAMP()
         WHERE account_key IN ({account_keys_sql})
@@ -336,9 +391,11 @@ class ParallelLaneManagerService:
         UPDATE `{queue_table}`
         SET
           status = 'retry',
+          work_phase = '{PHASE_RETRY}',
           lease_owner = NULL,
           lease_expires_at = NULL,
           next_attempt_at = TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL {retry_minutes} MINUTE),
+          retry_due_at = TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL {retry_minutes} MINUTE),
           last_error = '{escaped_error}',
           updated_at = CURRENT_TIMESTAMP()
         WHERE account_key IN ({account_keys_sql})
@@ -395,6 +452,9 @@ class ParallelLaneManagerService:
                     "source_lane": lane,
                     "parent_lane": lane,
                     "priority": priority,
+                    "work_phase": PHASE_FOLLOW_UP,
+                    "intake_source": str(snapshot.get("intake_source") or "other"),
+                    "intake_rank": int(snapshot.get("intake_rank") or 0),
                 }
             )
 
@@ -467,6 +527,8 @@ class ParallelLaneManagerService:
                 duplicate_active_items=self._count_duplicate_active_items(),
             )
 
+        if not dry_run:
+            self.backfill_frontier_metadata()
         seeded_counts = self.seed_all(dry_run=dry_run)
         duplicate_active_items = self._count_duplicate_active_items()
         detail = (
@@ -478,96 +540,194 @@ class ParallelLaneManagerService:
             self._record_status(status, detail)
         return LaneManagerResult(status, detail, seeded_counts, duplicate_active_items)
 
+    def backfill_frontier_metadata(self) -> None:
+        """Classify legacy queue rows into discovery/main-list/follow-up/retry phases."""
+
+        self.repository.execute_statement(
+            f"""
+            UPDATE `{self.settings.dealer_accounts_table_fqn}`
+            SET
+              intake_source = 'discovery',
+              promoted_at = COALESCE(promoted_at, updated_at, created_at, CURRENT_TIMESTAMP()),
+              intake_rank = COALESCE(intake_rank, CAST(-UNIX_SECONDS(COALESCE(promoted_at, updated_at, created_at, CURRENT_TIMESTAMP())) AS INT64)),
+              updated_at = CURRENT_TIMESTAMP()
+            WHERE COALESCE(NULLIF(TRIM(intake_source), ''), '') = ''
+              AND (
+                source_type = 'domain_discovery'
+                OR enrichment_stage = 'discovery_seed'
+                OR source_table = '{self.settings.discovered_domain_candidates_table}'
+              )
+            """
+        )
+        self.repository.execute_statement(
+            f"""
+            UPDATE `{self.settings.dealer_accounts_table_fqn}`
+            SET
+              intake_source = COALESCE(NULLIF(TRIM(intake_source), ''), 'primary_import'),
+              intake_rank = COALESCE(intake_rank, CAST(UNIX_SECONDS(COALESCE(first_seen_at, created_at, CURRENT_TIMESTAMP())) AS INT64)),
+              updated_at = CURRENT_TIMESTAMP()
+            WHERE intake_source IS NULL
+               OR intake_rank IS NULL
+            """
+        )
+        for lane in LANES:
+            queue_table = self.queue_table_fqn(lane)
+            query = f"""
+            UPDATE `{queue_table}` AS q
+            SET
+              work_phase = CASE
+                WHEN q.status = 'retry' THEN '{PHASE_RETRY}'
+                WHEN q.source_lane = 'seed' THEN CASE
+                  WHEN COALESCE(NULLIF(TRIM(da.intake_source), ''), 'primary_import') = 'discovery'
+                    THEN '{PHASE_DISCOVERY_FIRST_PASS}'
+                  ELSE '{PHASE_MAIN_LIST_FIRST_PASS}'
+                END
+                WHEN q.parent_lane IS NOT NULL OR q.source_lane != 'seed' THEN '{PHASE_FOLLOW_UP}'
+                ELSE '{PHASE_MAIN_LIST_FIRST_PASS}'
+              END,
+              intake_source = CASE
+                WHEN q.source_lane = 'seed' THEN COALESCE(NULLIF(TRIM(da.intake_source), ''), 'primary_import')
+                ELSE COALESCE(q.intake_source, da.intake_source, 'primary_import')
+              END,
+              intake_rank = CASE
+                WHEN q.source_lane = 'seed' THEN COALESCE(
+                  da.intake_rank,
+                  CASE
+                    WHEN COALESCE(NULLIF(TRIM(da.intake_source), ''), 'primary_import') = 'discovery'
+                      THEN COALESCE(UNIX_SECONDS(da.promoted_at) * -1, UNIX_SECONDS(da.created_at) * -1, 0)
+                    ELSE COALESCE(UNIX_SECONDS(da.first_seen_at), UNIX_SECONDS(da.created_at), 0)
+                  END
+                )
+                ELSE COALESCE(
+                  q.intake_rank,
+                  da.intake_rank,
+                  CASE
+                    WHEN COALESCE(NULLIF(TRIM(da.intake_source), ''), 'primary_import') = 'discovery'
+                      THEN COALESCE(UNIX_SECONDS(da.promoted_at) * -1, UNIX_SECONDS(da.created_at) * -1, 0)
+                    ELSE COALESCE(UNIX_SECONDS(da.first_seen_at), UNIX_SECONDS(da.created_at), 0)
+                  END
+                )
+              END,
+              retry_due_at = CASE
+                WHEN q.status = 'retry' THEN COALESCE(q.retry_due_at, q.next_attempt_at, CURRENT_TIMESTAMP())
+                ELSE q.retry_due_at
+              END,
+              updated_at = CURRENT_TIMESTAMP()
+            FROM `{self.settings.dealer_accounts_table_fqn}` AS da
+            WHERE da.account_key = q.account_key
+              AND (
+                q.work_phase IS NULL
+                OR q.intake_source IS NULL
+                OR q.intake_rank IS NULL
+                OR (q.status = 'retry' AND q.retry_due_at IS NULL)
+                OR (
+                  q.source_lane = 'seed'
+                  AND COALESCE(NULLIF(TRIM(q.intake_source), ''), 'primary_import') != COALESCE(NULLIF(TRIM(da.intake_source), ''), 'primary_import')
+                )
+              )
+            """
+            self.repository.execute_statement(query)
+
     def _seed_source_query(self, lane: str) -> str:
         """Return the canonical source query for one lane safety-net seed."""
 
-        if lane == LANE_VALIDATE:
+        def first_pass_select(priority: int, reason: str, dealer_filter: str) -> str:
+            queue_table = self.queue_table_fqn(lane)
             return f"""
-            SELECT account_key, 100 AS priority, 'validate_account' AS reason
-            FROM `{self.settings.dealer_accounts_table_fqn}`
-            WHERE IFNULL(is_personal_domain, FALSE) = FALSE
-            """
-        if lane == LANE_CRAWL:
-            return f"""
-            SELECT account_key, 80 AS priority, 'crawl_missing_core_fields' AS reason
-            FROM `{self.settings.dealer_accounts_table_fqn}`
-            WHERE dealer_classification IN ('dealer', 'dealer_group')
-              AND (
-                website_url IS NULL
-                OR TRIM(website_url) = ''
-                OR account_name IS NULL
-                OR TRIM(account_name) = ''
-                OR inferred_brand IS NULL
-                OR TRIM(inferred_brand) = ''
-                OR account_city IS NULL
-                OR account_state IS NULL
-              )
-            """
-        if lane == LANE_GBP:
-            return f"""
-            SELECT account_key, 60 AS priority, 'gbp_missing_phone_or_address' AS reason
-            FROM `{self.settings.dealer_accounts_table_fqn}`
-            WHERE dealer_classification IN ('dealer', 'dealer_group')
-              AND (
-                best_phone IS NULL
-                OR TRIM(best_phone) = ''
-                OR gbp_address_line IS NULL
-                OR TRIM(gbp_address_line) = ''
-                OR account_city IS NULL
-                OR account_state IS NULL
-                OR fetch_status = 'blocked'
-              )
-            """
-        if lane == LANE_AI:
-            return f"""
-            SELECT account_key, 65 AS priority, 'ai_missing_phone_or_location' AS reason
-            FROM `{self.settings.dealer_accounts_table_fqn}`
-            WHERE dealer_classification IN ('dealer', 'dealer_group')
-              AND (
-                fetch_status = 'blocked'
-                OR managed_fetch_status = 'eligible'
-                OR website_url IS NULL
-                OR TRIM(website_url) = ''
-                OR best_phone IS NULL
-                OR TRIM(best_phone) = ''
-                OR account_city IS NULL
-                OR account_state IS NULL
-              )
-              AND (
-                next_ai_retrieval_at IS NULL
-                OR next_ai_retrieval_at <= CURRENT_TIMESTAMP()
-              )
-            """
-        if lane == LANE_CONTACT_EXTRACT:
-            return f"""
-            SELECT da.account_key, 70 AS priority, 'website_ready_for_contact_extract' AS reason
+            SELECT
+              da.account_key,
+              {priority} AS priority,
+              '{reason}' AS reason,
+              CASE
+                WHEN COALESCE(NULLIF(TRIM(da.intake_source), ''), 'primary_import') = 'discovery'
+                  THEN '{PHASE_DISCOVERY_FIRST_PASS}'
+                ELSE '{PHASE_MAIN_LIST_FIRST_PASS}'
+              END AS work_phase,
+              COALESCE(NULLIF(TRIM(da.intake_source), ''), 'primary_import') AS intake_source,
+              CASE
+                WHEN COALESCE(NULLIF(TRIM(da.intake_source), ''), 'primary_import') = 'discovery'
+                  THEN COALESCE(UNIX_SECONDS(da.promoted_at) * -1, UNIX_SECONDS(da.created_at) * -1, 0)
+                ELSE COALESCE(UNIX_SECONDS(da.first_seen_at), UNIX_SECONDS(da.created_at), 0)
+              END AS intake_rank
             FROM `{self.settings.dealer_accounts_table_fqn}` AS da
-            WHERE da.dealer_classification IN ('dealer', 'dealer_group')
-              AND da.website_url IS NOT NULL
-              AND TRIM(da.website_url) != ''
+            WHERE {dealer_filter}
               AND NOT EXISTS (
                 SELECT 1
-                FROM `{self.settings.account_relationships_table_fqn}` AS ar
-                WHERE ar.dealer_account_id = da.dealer_account_id
-                  AND ar.source_type = 'website_contact_extraction'
+                FROM `{queue_table}` AS q
+                WHERE q.account_key = da.account_key
+                  AND q.first_attempt_at IS NOT NULL
               )
             """
+
+        if lane == LANE_VALIDATE:
+            return first_pass_select(
+                priority=100,
+                reason="validate_account",
+                dealer_filter="IFNULL(da.is_personal_domain, FALSE) = FALSE",
+            )
+        if lane == LANE_CRAWL:
+            return first_pass_select(
+                priority=80,
+                reason="crawl_first_pass",
+                dealer_filter="da.dealer_classification IN ('dealer', 'dealer_group', 'unknown')",
+            )
+        if lane == LANE_GBP:
+            return first_pass_select(
+                priority=60,
+                reason="gbp_first_pass",
+                dealer_filter="da.dealer_classification IN ('dealer', 'dealer_group')",
+            )
+        if lane == LANE_AI:
+            return first_pass_select(
+                priority=65,
+                reason="ai_first_pass",
+                dealer_filter=(
+                    "da.dealer_classification IN ('dealer', 'dealer_group') "
+                    "AND (da.next_ai_retrieval_at IS NULL OR da.next_ai_retrieval_at <= CURRENT_TIMESTAMP())"
+                ),
+            )
+        if lane == LANE_CONTACT_EXTRACT:
+            return first_pass_select(
+                priority=70,
+                reason="contact_extract_first_pass",
+                dealer_filter="da.dealer_classification IN ('dealer', 'dealer_group')",
+            )
         if lane == LANE_BLOCKED_RETRY:
             return f"""
-            SELECT account_key, 70 AS priority, 'blocked_site_retry_due' AS reason
-            FROM `{self.settings.dealer_accounts_table_fqn}`
-            WHERE dealer_classification IN ('dealer', 'dealer_group')
-              AND fetch_status = 'blocked'
-              AND {self._blocked_retry_due_sql('')}
+            SELECT
+              da.account_key,
+              70 AS priority,
+              'blocked_site_retry_due' AS reason,
+              '{PHASE_RETRY}' AS work_phase,
+              COALESCE(NULLIF(TRIM(da.intake_source), ''), 'primary_import') AS intake_source,
+              CASE
+                WHEN COALESCE(NULLIF(TRIM(da.intake_source), ''), 'primary_import') = 'discovery'
+                  THEN COALESCE(UNIX_SECONDS(da.promoted_at) * -1, UNIX_SECONDS(da.created_at) * -1, 0)
+                ELSE COALESCE(UNIX_SECONDS(da.first_seen_at), UNIX_SECONDS(da.created_at), 0)
+              END AS intake_rank
+            FROM `{self.settings.dealer_accounts_table_fqn}` AS da
+            WHERE da.dealer_classification IN ('dealer', 'dealer_group')
+              AND da.fetch_status = 'blocked'
+              AND {self._blocked_retry_due_sql('da')}
             """
         if lane == LANE_LEAD_REFRESH:
             return f"""
             WITH changed_accounts AS (
-              SELECT DISTINCT account_key
-              FROM `{self.settings.dealer_accounts_table_fqn}`
-              WHERE updated_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 DAY)
+              SELECT DISTINCT
+                da.account_key,
+                da.intake_source,
+                da.promoted_at,
+                da.first_seen_at,
+                da.created_at
+              FROM `{self.settings.dealer_accounts_table_fqn}` AS da
+              WHERE da.updated_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 DAY)
               UNION DISTINCT
-              SELECT DISTINCT da.account_key
+              SELECT DISTINCT
+                da.account_key,
+                da.intake_source,
+                da.promoted_at,
+                da.first_seen_at,
+                da.created_at
               FROM `{self.settings.account_relationships_table_fqn}` AS ar
               JOIN `{self.settings.dealer_accounts_table_fqn}` AS da
                 ON da.dealer_account_id = ar.dealer_account_id
@@ -576,7 +736,17 @@ class ParallelLaneManagerService:
               WHERE ar.updated_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 DAY)
                  OR pc.updated_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 DAY)
             )
-            SELECT account_key, 40 AS priority, 'materialization_refresh_needed' AS reason
+            SELECT
+              account_key,
+              40 AS priority,
+              'materialization_refresh_needed' AS reason,
+              '{PHASE_FOLLOW_UP}' AS work_phase,
+              COALESCE(NULLIF(TRIM(intake_source), ''), 'primary_import') AS intake_source,
+              CASE
+                WHEN COALESCE(NULLIF(TRIM(intake_source), ''), 'primary_import') = 'discovery'
+                  THEN COALESCE(UNIX_SECONDS(promoted_at) * -1, UNIX_SECONDS(created_at) * -1, 0)
+                ELSE COALESCE(UNIX_SECONDS(first_seen_at), UNIX_SECONDS(created_at), 0)
+              END AS intake_rank
             FROM changed_accounts
             """
         raise ValueError(f"Unsupported lane: {lane}")
@@ -597,6 +767,8 @@ class ParallelLaneManagerService:
           da.gbp_address_line,
           da.ai_address_line,
           da.managed_fetch_status,
+          COALESCE(NULLIF(TRIM(da.intake_source), ''), 'primary_import') AS intake_source,
+          COALESCE(da.intake_rank, 0) AS intake_rank,
           COUNT(DISTINCT ar.relationship_id) AS contact_count,
           COUNTIF(ar.source_type = 'website_contact_extraction') AS website_contact_count
         FROM `{self.settings.dealer_accounts_table_fqn}` AS da
@@ -613,7 +785,9 @@ class ParallelLaneManagerService:
           da.account_state,
           da.gbp_address_line,
           da.ai_address_line,
-          da.managed_fetch_status
+          da.managed_fetch_status,
+          da.intake_source,
+          da.intake_rank
         """
         return self.repository.fetch_all(query)
 
@@ -852,19 +1026,36 @@ class ParallelLaneManagerService:
     def _claim_eligibility_sql(self, lane: str) -> str:
         """Return additional claim-time eligibility checks for one lane."""
 
-        if lane != LANE_AI:
-            return ""
-        return f"""
-          AND account_key IN (
-            SELECT account_key
-            FROM `{self.settings.dealer_accounts_table_fqn}`
-            WHERE dealer_classification IN ('dealer', 'dealer_group')
-              AND (
-                next_ai_retrieval_at IS NULL
-                OR next_ai_retrieval_at <= CURRENT_TIMESTAMP()
-              )
-          )
+        queue_table = self.queue_table_fqn(lane)
+        frontier_query = f"""
+        SELECT COUNT(*) AS row_count
+        FROM `{queue_table}`
+        WHERE status IN ('pending', 'retry')
+          AND work_phase IN ('{PHASE_DISCOVERY_FIRST_PASS}', '{PHASE_MAIN_LIST_FIRST_PASS}')
+          AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP())
+          AND (lease_expires_at IS NULL OR lease_expires_at <= CURRENT_TIMESTAMP())
         """
+        frontier_count = int(self.repository.fetch_one(frontier_query).get("row_count", 0) or 0)
+        clauses = []
+        if frontier_count > 0:
+            clauses.append(
+                f"work_phase IN ('{PHASE_DISCOVERY_FIRST_PASS}', '{PHASE_MAIN_LIST_FIRST_PASS}')"
+            )
+        if lane == LANE_AI:
+            clauses.append(
+                f"""account_key IN (
+                  SELECT account_key
+                  FROM `{self.settings.dealer_accounts_table_fqn}`
+                  WHERE dealer_classification IN ('dealer', 'dealer_group')
+                    AND (
+                      next_ai_retrieval_at IS NULL
+                      OR next_ai_retrieval_at <= CURRENT_TIMESTAMP()
+                    )
+                )"""
+            )
+        if not clauses:
+            return ""
+        return "\n          AND " + "\n          AND ".join(clauses)
 
     def _default_priority(self, lane: str) -> int:
         return {

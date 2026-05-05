@@ -1484,7 +1484,10 @@ class DomainDiscoveryService:
             {self._sql_string(website_url)} AS website_url,
             {self._sql_string(source_url)} AS website_source_url,
             {self._sql_string(market)} AS source_market,
-            {self._sql_string(country)} AS source_country
+            {self._sql_string(country)} AS source_country,
+            'discovery' AS intake_source,
+            CAST(-UNIX_SECONDS(CURRENT_TIMESTAMP()) AS INT64) AS intake_rank,
+            CURRENT_TIMESTAMP() AS promoted_at
         ) AS source
         ON target.account_key = source.account_key
         WHEN NOT MATCHED THEN
@@ -1504,6 +1507,9 @@ class DomainDiscoveryService:
             confidence_score,
             source_type,
             source_table,
+            intake_source,
+            intake_rank,
+            promoted_at,
             website_source_url,
             first_seen_at,
             last_seen_at,
@@ -1526,6 +1532,9 @@ class DomainDiscoveryService:
             0.45,
             'domain_discovery',
             '{self.settings.discovered_domain_candidates_table}',
+            source.intake_source,
+            source.intake_rank,
+            source.promoted_at,
             source.website_source_url,
             CURRENT_TIMESTAMP(),
             CURRENT_TIMESTAMP(),
@@ -1541,6 +1550,13 @@ class DomainDiscoveryService:
             website_url = COALESCE(NULLIF(target.website_url, ''), source.website_url),
             source_type = COALESCE(NULLIF(target.source_type, ''), 'domain_discovery'),
             source_table = COALESCE(NULLIF(target.source_table, ''), '{self.settings.discovered_domain_candidates_table}'),
+            intake_source = COALESCE(NULLIF(target.intake_source, ''), source.intake_source),
+            intake_rank = CASE
+              WHEN COALESCE(NULLIF(target.intake_source, ''), '') = 'discovery' THEN COALESCE(target.intake_rank, source.intake_rank)
+              WHEN target.intake_rank IS NULL THEN source.intake_rank
+              ELSE target.intake_rank
+            END,
+            promoted_at = COALESCE(target.promoted_at, source.promoted_at),
             last_seen_at = CURRENT_TIMESTAMP(),
             updated_at = CURRENT_TIMESTAMP()
         """
