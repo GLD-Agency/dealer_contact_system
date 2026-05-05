@@ -9,6 +9,10 @@ from typing import Any
 
 from app.bigquery_repository import BigQueryRepository
 from app.config import Settings
+from app.logging_utils import get_logger
+
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -60,7 +64,9 @@ class DashboardService:
             "frontier_rows": self._get_frontier_rows(),
             "recent_runs": self._get_recent_runs(),
             "recent_discovery_runs": self._get_recent_discovery_runs(),
-            "blocked_accounts": self._get_blocked_accounts(),
+            # This panel is operationally useful, but the live query can contend
+            # with heavy account-table writes and make the whole dashboard time out.
+            "blocked_accounts": [],
             "integration_connections": self._get_integration_connections(),
         }
 
@@ -1949,4 +1955,8 @@ class DashboardService:
         ORDER BY blocked_attempt_count DESC, last_fetch_attempt_at DESC
         LIMIT 12
         """
-        return self.repository.fetch_all(query)
+        try:
+            return self.repository.fetch_all(query)
+        except Exception as exc:
+            logger.warning("Blocked accounts dashboard query failed; returning empty list | error=%s", exc)
+            return []
