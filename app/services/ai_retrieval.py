@@ -104,6 +104,11 @@ class GeminiRetrievalProvider:
     def is_available(self) -> bool:
         return self.settings.gemini_enabled and bool(self.settings.gemini_api_key)
 
+    def _request_timeout(self) -> int:
+        """Return a provider timeout long enough for grounded search responses."""
+
+        return max(self.settings.request_timeout_seconds * 5, 60)
+
     def retrieve_account_facts(
         self,
         account: AiRetrievalAccountCandidate,
@@ -132,7 +137,7 @@ class GeminiRetrievalProvider:
                 self.API_URL_TEMPLATE.format(model=self.settings.gemini_model),
                 params={"key": self.settings.gemini_api_key},
                 json=payload,
-                timeout=self.settings.request_timeout_seconds * 3,
+                timeout=self._request_timeout(),
             )
             if response.status_code == 429:
                 retry_after = response.headers.get("Retry-After")
@@ -227,6 +232,11 @@ class OpenAIRetrievalProvider:
     def is_available(self) -> bool:
         return self.settings.openai_enabled and bool(self.settings.openai_api_key)
 
+    def _request_timeout(self) -> int:
+        """Return a provider timeout long enough for web-grounded responses."""
+
+        return max(self.settings.request_timeout_seconds * 5, 60)
+
     def retrieve_account_facts(
         self,
         account: AiRetrievalAccountCandidate,
@@ -256,7 +266,7 @@ class OpenAIRetrievalProvider:
                     "Content-Type": "application/json",
                 },
                 json=payload,
-                timeout=self.settings.request_timeout_seconds * 3,
+                timeout=self._request_timeout(),
             )
             if response.status_code == 429:
                 retry_after = response.headers.get("Retry-After")
