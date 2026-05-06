@@ -1162,8 +1162,16 @@ class ParallelLaneWorkerService:
             worker_id=worker_id,
             requested_batch_size=batch_size,
         )
-        account_keys = self.manager.claim_batch(lane, batch_size, worker_id)
-        logger.info("Lane worker claimed queue items", extra={"lane": lane, "claimed_count": len(account_keys)})
+        claimed_account_keys = self.manager.claim_batch(lane, batch_size, worker_id)
+        account_keys = list(dict.fromkeys(claimed_account_keys))
+        logger.info(
+            "Lane worker claimed queue items",
+            extra={
+                "lane": lane,
+                "claimed_count": len(claimed_account_keys),
+                "unique_account_count": len(account_keys),
+            },
+        )
         if not account_keys:
             self.run_logger.finish_run(
                 pipeline_run_id=pipeline_run_id,
