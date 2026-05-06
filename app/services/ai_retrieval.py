@@ -645,7 +645,7 @@ class AiRetrievalService:
           updated_at = CURRENT_TIMESTAMP()
         WHERE dealer_account_id = '{self._escape_sql(account.dealer_account_id)}'
         """
-        self.repository.execute_statement(query)
+        self._execute_account_statement_with_retry(query)
 
     def _mark_attempt_without_update(
         self,
@@ -682,7 +682,7 @@ class AiRetrievalService:
           updated_at = CURRENT_TIMESTAMP()
         WHERE dealer_account_id = '{self._escape_sql(account.dealer_account_id)}'
         """
-        self.repository.execute_statement(query)
+        self._execute_account_statement_with_retry(query)
 
     def _promote_staff_hints(
         self,
@@ -1060,6 +1060,28 @@ class AiRetrievalService:
         """
         self.repository.execute_statement(query)
 
+    def _execute_account_statement_with_retry(self, query: str) -> None:
+        """Retry transient dealer-account write conflicts in the AI lane."""
+
+        max_attempts = 5
+        delay_seconds = 1.0
+        for attempt in range(1, max_attempts + 1):
+            try:
+                self.repository.execute_statement(query)
+                return
+            except Exception as exc:
+                message = str(exc)
+                is_retryable = "Could not serialize access to table" in message
+                if not is_retryable or attempt >= max_attempts:
+                    raise
+                logger.warning(
+                    "Retrying AI dealer_account write after transient serialization conflict | attempt=%s | error=%s",
+                    attempt,
+                    message,
+                )
+                time.sleep(delay_seconds)
+                delay_seconds *= 2
+
     def _sql_literal(self, value: Any) -> str:
         """Convert one Python value into a BigQuery SQL literal."""
 
@@ -1290,3 +1312,43 @@ def normalize_country(value: Any) -> str | None:
     if lowered in {"us", "usa", "united states", "united states of america"}:
         return "United States"
     return value.strip()
+
+
+def split_full_name(value: str) -> tuple[str, str]:
+    """Split a display name into first and last name conservatively."""
+
+    cleaned = re.sub(r"\s+", " ", str(value or "").strip())
+    if not cleaned:
+        return "", ""
+    parts = cleaned.split(" ")
+    if len(parts) == 1:
+        return cleaned, ""
+    return parts[0], " ".join(parts[1:])
+
+
+def normalize_role_family(value: Any, role_title: str | None = None) -> str:
+    """Map free-form role hints into a stable role family."""
+
+    cleaned = str(value or "").strip().lower()
+    title = str(role_title or "").strip().lower()
+    haystack = f"{cleaned} {title}".strip()
+    if any(token in haystack for token in ("general manager", "dealer principal", "owner", "president", "ceo", "chief executive", "controller", "cfo", "finance")):
+        return "executive"
+    if any(token in haystack for token in ("sales", "internet", "bdc")):
+        return "sales"
+    if any(token in haystack for token in ("service", "parts", "fixed ops", "fixed operations")):
+        return "service"
+    if any(token in haystack for token in ("operations", "operating")):
+        return "operations"
+    if any(token in haystack for token in ("marketing", "ecommerce", "e-commerce", "digital")):
+        return "marketing"
+    return cleaned or "other"
+
+
+def normalize_role_type(role_family: Any) -> str:
+    """Map a role family into the broader role type used by prospect contacts."""
+
+    cleaned = str(role_family or "").strip().lower()
+    if cleaned in {"executive", "operations", "sales", "service", "marketing"}:
+        return cleaned
+    return "other"
