@@ -55,6 +55,7 @@ class Settings:
     enrich_worker_batch_size: int
     gbp_worker_batch_size: int
     ai_retrieval_batch_size: int
+    ai_parallel_workers: int
     extract_worker_batch_size: int
     retry_blocked_worker_batch_size: int
     campaign_monitor_sync_batch_size: int
@@ -375,6 +376,7 @@ def get_settings() -> Settings:
         enrich_worker_batch_size=int(os.getenv("ENRICH_WORKER_BATCH_SIZE", "25")),
         gbp_worker_batch_size=int(os.getenv("GBP_WORKER_BATCH_SIZE", "25")),
         ai_retrieval_batch_size=int(os.getenv("AI_RETRIEVAL_BATCH_SIZE", "1")),
+        ai_parallel_workers=int(os.getenv("AI_PARALLEL_WORKERS", "1")),
         extract_worker_batch_size=int(os.getenv("EXTRACT_WORKER_BATCH_SIZE", "25")),
         retry_blocked_worker_batch_size=int(os.getenv("RETRY_BLOCKED_WORKER_BATCH_SIZE", "10")),
         campaign_monitor_sync_batch_size=int(os.getenv("CAMPAIGN_MONITOR_SYNC_BATCH_SIZE", "1000")),

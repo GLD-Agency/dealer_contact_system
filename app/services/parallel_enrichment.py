@@ -1147,7 +1147,8 @@ class ParallelLaneWorkerService:
             }
 
         worker_id = str(uuid.uuid4())
-        if not self._acquire_lane_lock(lane, worker_id):
+        lock_id = self._acquire_lane_lock(lane, worker_id)
+        if not lock_id:
             return {
                 "lane": lane,
                 "status": "skipped",
@@ -1227,7 +1228,7 @@ class ParallelLaneWorkerService:
             )
             raise
         finally:
-            self._record_lane_lock_status(lane=lane, status="idle", detail=f"worker:{worker_id}")
+            self._record_lane_lock_status(lock_id=lock_id, status="idle", detail=f"worker:{worker_id}")
 
     def _dispatch_lane(self, lane: str, account_keys: list[str]) -> None:
         """Dispatch one lane to the underlying enrichment service."""
@@ -1268,81 +1269,83 @@ class ParallelLaneWorkerService:
             return
         raise ValueError(f"Unsupported lane: {lane}")
 
-    def _acquire_lane_lock(self, lane: str, worker_id: str) -> bool:
-        """Acquire a coarse per-lane lock so schedulers do not overlap the same worker."""
+    def _acquire_lane_lock(self, lane: str, worker_id: str) -> str | None:
+        """Acquire one available per-lane lock slot and return its lock id."""
 
-        lock_id = self._lane_lock_id(lane)
         detail = self._escape_sql(f"worker:{worker_id}")
         grace_minutes = max(self.settings.worker_lease_minutes, 15)
-        query = f"""
-        MERGE `{self.settings.sync_targets_table_fqn}` AS target
-        USING (
-          SELECT
-            '{lock_id}' AS sync_target_id,
-            '{self._escape_sql(lock_id)}' AS target_system,
-            'lane_worker' AS target_entity_type,
-            '{self._escape_sql(lane)}' AS target_entity_id,
-            'system' AS source_record_type,
-            '{lock_id}' AS source_record_id
-        ) AS source
-        ON target.sync_target_id = source.sync_target_id
-        WHEN MATCHED
-          AND (
-            target.sync_status != 'running'
-            OR target.updated_at IS NULL
-            OR target.updated_at < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {grace_minutes} MINUTE)
-          )
-        THEN
-          UPDATE SET
-            sync_status = 'running',
-            sync_detail = '{detail}',
-            last_synced_at = CURRENT_TIMESTAMP(),
-            updated_at = CURRENT_TIMESTAMP()
-        WHEN NOT MATCHED THEN
-          INSERT (
-            sync_target_id,
-            target_system,
-            target_entity_type,
-            target_entity_id,
-            source_record_type,
-            source_record_id,
-            sync_status,
-            sync_detail,
-            last_synced_at,
-            created_at,
-            updated_at
-          )
-          VALUES (
-            source.sync_target_id,
-            source.target_system,
-            source.target_entity_type,
-            source.target_entity_id,
-            source.source_record_type,
-            source.source_record_id,
-            'running',
-            '{detail}',
-            CURRENT_TIMESTAMP(),
-            CURRENT_TIMESTAMP(),
-            CURRENT_TIMESTAMP()
-          )
-        """
-        self.repository.execute_statement(query)
-        row = self.repository.fetch_one(
-            f"""
-            SELECT sync_status, sync_detail
-            FROM `{self.settings.sync_targets_table_fqn}`
-            WHERE sync_target_id = '{lock_id}'
+        for slot in range(1, self._max_parallel_workers_for_lane(lane) + 1):
+            lock_id = self._lane_lock_id(lane, slot)
+            query = f"""
+            MERGE `{self.settings.sync_targets_table_fqn}` AS target
+            USING (
+              SELECT
+                '{lock_id}' AS sync_target_id,
+                '{self._escape_sql(lock_id)}' AS target_system,
+                'lane_worker' AS target_entity_type,
+                '{self._escape_sql(lane)}' AS target_entity_id,
+                'system' AS source_record_type,
+                '{lock_id}' AS source_record_id
+            ) AS source
+            ON target.sync_target_id = source.sync_target_id
+            WHEN MATCHED
+              AND (
+                target.sync_status != 'running'
+                OR target.updated_at IS NULL
+                OR target.updated_at < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {grace_minutes} MINUTE)
+              )
+            THEN
+              UPDATE SET
+                sync_status = 'running',
+                sync_detail = '{detail}',
+                last_synced_at = CURRENT_TIMESTAMP(),
+                updated_at = CURRENT_TIMESTAMP()
+            WHEN NOT MATCHED THEN
+              INSERT (
+                sync_target_id,
+                target_system,
+                target_entity_type,
+                target_entity_id,
+                source_record_type,
+                source_record_id,
+                sync_status,
+                sync_detail,
+                last_synced_at,
+                created_at,
+                updated_at
+              )
+              VALUES (
+                source.sync_target_id,
+                source.target_system,
+                source.target_entity_type,
+                source.target_entity_id,
+                source.source_record_type,
+                source.source_record_id,
+                'running',
+                '{detail}',
+                CURRENT_TIMESTAMP(),
+                CURRENT_TIMESTAMP(),
+                CURRENT_TIMESTAMP()
+              )
             """
-        )
-        return (
-            str(row.get("sync_status") or "") == "running"
-            and str(row.get("sync_detail") or "") == f"worker:{worker_id}"
-        )
+            self.repository.execute_statement(query)
+            row = self.repository.fetch_one(
+                f"""
+                SELECT sync_status, sync_detail
+                FROM `{self.settings.sync_targets_table_fqn}`
+                WHERE sync_target_id = '{lock_id}'
+                """
+            )
+            if (
+                str(row.get("sync_status") or "") == "running"
+                and str(row.get("sync_detail") or "") == f"worker:{worker_id}"
+            ):
+                return lock_id
+        return None
 
-    def _record_lane_lock_status(self, lane: str, status: str, detail: str) -> None:
+    def _record_lane_lock_status(self, lock_id: str, status: str, detail: str) -> None:
         """Persist the latest per-lane worker heartbeat so health checks stay truthful."""
 
-        lock_id = self._lane_lock_id(lane)
         escaped_detail = self._escape_sql(detail[:4000])
         query = f"""
         UPDATE `{self.settings.sync_targets_table_fqn}`
@@ -1355,10 +1358,17 @@ class ParallelLaneWorkerService:
         """
         self.repository.execute_statement(query)
 
-    def _lane_lock_id(self, lane: str) -> str:
-        """Return the sync-target key used as a coarse lock for one lane."""
+    def _lane_lock_id(self, lane: str, slot: int = 1) -> str:
+        """Return the sync-target key used as a coarse lock for one lane slot."""
 
-        return f"{self.LANE_LOCK_PREFIX}_{lane}"
+        return f"{self.LANE_LOCK_PREFIX}_{lane}_{slot}"
+
+    def _max_parallel_workers_for_lane(self, lane: str) -> int:
+        """Return the configured concurrency slots for one lane."""
+
+        if lane == LANE_AI:
+            return max(1, self.settings.ai_parallel_workers)
+        return 1
 
     def _escape_sql(self, value: str) -> str:
         """Escape one string for a BigQuery string literal."""

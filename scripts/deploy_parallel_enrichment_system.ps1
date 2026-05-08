@@ -8,7 +8,8 @@ param(
     [int]$ValidateBatchSize = 75,
     [int]$CrawlBatchSize = 25,
     [int]$GbpBatchSize = 50,
-    [int]$AiBatchSize = 5,
+    [int]$AiBatchSize = 7,
+    [int]$AiParallelWorkers = 2,
     [int]$ContactExtractBatchSize = 25,
     [int]$BlockedRetryBatchSize = 10,
     [int]$CampaignMonitorSyncBatchSize = 1000,
@@ -17,6 +18,7 @@ param(
     [string]$CrawlSchedule = "5,20,35,50 * * * *",
     [string]$GbpSchedule = "8,38 * * * *",
     [string]$AiSchedule = "11,41 * * * *",
+    [string]$AiSecondarySchedule = "26,56 * * * *",
     [string]$ContactExtractSchedule = "14,29,44,59 * * * *",
     [string]$BlockedRetrySchedule = "17,47 * * * *",
     [string]$LeadRefreshSchedule = "23,53 * * * *",
@@ -57,6 +59,7 @@ $schedulerNames = @{
     crawl = "dealer-crawl-worker-schedule"
     gbp = "dealer-gbp-worker-schedule"
     ai = "dealer-ai-worker-schedule"
+    ai_secondary = "dealer-ai-worker-secondary-schedule"
     contact_extract = "dealer-contact-extract-worker-schedule"
     blocked_retry = "dealer-blocked-retry-worker-schedule"
     lead_refresh = "dealer-lead-refresh-worker-schedule"
@@ -162,6 +165,7 @@ $sharedEnv = @{
     ENRICH_WORKER_BATCH_SIZE = "$CrawlBatchSize"
     GBP_WORKER_BATCH_SIZE = "$GbpBatchSize"
     AI_RETRIEVAL_BATCH_SIZE = "$AiBatchSize"
+    AI_PARALLEL_WORKERS = "$AiParallelWorkers"
     EXTRACT_WORKER_BATCH_SIZE = "$ContactExtractBatchSize"
     RETRY_BLOCKED_WORKER_BATCH_SIZE = "$BlockedRetryBatchSize"
     AI_RETRIEVAL_ENABLED = "true"
@@ -242,6 +246,7 @@ Upsert-Scheduler -SchedulerName $schedulerNames.validate -JobName $jobNames.vali
 Upsert-Scheduler -SchedulerName $schedulerNames.crawl -JobName $jobNames.crawl -Schedule $CrawlSchedule
 Upsert-Scheduler -SchedulerName $schedulerNames.gbp -JobName $jobNames.gbp -Schedule $GbpSchedule
 Upsert-Scheduler -SchedulerName $schedulerNames.ai -JobName $jobNames.ai -Schedule $AiSchedule
+Upsert-Scheduler -SchedulerName $schedulerNames.ai_secondary -JobName $jobNames.ai -Schedule $AiSecondarySchedule
 Upsert-Scheduler -SchedulerName $schedulerNames.contact_extract -JobName $jobNames.contact_extract -Schedule $ContactExtractSchedule
 Upsert-Scheduler -SchedulerName $schedulerNames.blocked_retry -JobName $jobNames.blocked_retry -Schedule $BlockedRetrySchedule
 Upsert-Scheduler -SchedulerName $schedulerNames.lead_refresh -JobName $jobNames.lead_refresh -Schedule $LeadRefreshSchedule
