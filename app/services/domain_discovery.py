@@ -88,6 +88,13 @@ PERSONAL_DOMAIN_ROOTS = {
     "me",
     "mac",
 }
+GENERIC_NON_ROOFTOP_BRANDS = {
+    "fca",
+    "fiat chrysler automobiles",
+    "general motors",
+    "gm",
+    "stellantis",
+}
 CANADA_PROVINCES = {
     "AB", "BC", "MB", "NB", "NL", "NS", "NT", "NU", "ON", "PE", "QC", "SK", "YT",
 }
@@ -97,6 +104,11 @@ US_STATES = {
     "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN",
     "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY", "DC",
 }
+DISCOVERY_STALE_QUEUE_DAYS = 14
+DISCOVERY_STALE_QUEUE_COOLDOWN_DAYS = 30
+DISCOVERY_LOW_YIELD_LOOKBACK_DAYS = 21
+DISCOVERY_LOW_YIELD_DUPLICATE_THRESHOLD = 3
+DISCOVERY_SATURATED_DUPLICATE_THRESHOLD = 5
 
 
 @dataclass(frozen=True)
@@ -260,6 +272,9 @@ class DomainDiscoveryService:
         """Seed discovery search terms from existing brand and geography coverage."""
 
         self._ensure_metro_targets_seeded(dry_run=dry_run)
+        if not dry_run:
+            self._retire_stale_seed_tasks()
+            self._retire_non_rooftop_brand_tasks()
         tasks = self._build_seed_tasks()
         if dry_run:
             return len(tasks)
@@ -456,6 +471,7 @@ class DomainDiscoveryService:
         if not metros or not brands:
             return self._build_fallback_seed_tasks()
 
+        suppressed_terms = self._load_suppressed_search_terms()
         us_tasks: list[DiscoverySeedTask] = []
         canada_tasks: list[DiscoverySeedTask] = []
         seen: set[str] = set()
@@ -476,7 +492,7 @@ class DomainDiscoveryService:
                 for expansion in expansions:
                     search_term = " ".join([brand, expansion, *location_parts]).strip()
                     dedupe_key = self._normalize_key(search_term)
-                    if dedupe_key in seen:
+                    if dedupe_key in seen or dedupe_key in suppressed_terms:
                         continue
                     seen.add(dedupe_key)
                     bucket.append(
@@ -700,17 +716,48 @@ class DomainDiscoveryService:
           WHERE oem IS NOT NULL
             AND TRIM(oem) != ''
           GROUP BY oem
+        ),
+        aggregated_brand_counts AS (
+          SELECT brand_hint, SUM(total_count) AS total_count
+          FROM brand_counts
+          GROUP BY brand_hint
+        ),
+        recent_discovery AS (
+          SELECT
+            brand_hint,
+            COUNT(*) AS recent_candidates,
+            COUNTIF(promotion_status = 'promoted_to_main_pipeline') AS recent_promoted,
+            COUNTIF(promotion_status = 'duplicate_existing') AS recent_duplicate_existing
+          FROM `{self.settings.discovered_domain_candidates_table_fqn}`
+          WHERE discovered_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {DISCOVERY_LOW_YIELD_LOOKBACK_DAYS} DAY)
+            AND brand_hint IS NOT NULL
+            AND TRIM(brand_hint) != ''
+          GROUP BY brand_hint
         )
-        SELECT brand_hint
-        FROM brand_counts
-        WHERE brand_hint IS NOT NULL
-          AND TRIM(brand_hint) != ''
-          AND LOWER(TRIM(brand_hint)) != 'unknown'
-        GROUP BY brand_hint
-        ORDER BY SUM(total_count) DESC, brand_hint ASC
+        SELECT counts.brand_hint
+        FROM aggregated_brand_counts AS counts
+        LEFT JOIN recent_discovery AS recent
+          ON recent.brand_hint = counts.brand_hint
+        WHERE counts.brand_hint IS NOT NULL
+          AND TRIM(counts.brand_hint) != ''
+          AND LOWER(TRIM(counts.brand_hint)) != 'unknown'
+        ORDER BY
+          COALESCE(recent.recent_candidates, 0) ASC,
+          COALESCE(recent.recent_duplicate_existing, 0) ASC,
+          COALESCE(recent.recent_promoted, 0) DESC,
+          counts.total_count DESC,
+          counts.brand_hint ASC
         LIMIT 40
         """
-        return [str(row["brand_hint"]).strip() for row in self.repository.fetch_all(query) if str(row.get("brand_hint") or "").strip()]
+        ranked_brands: list[str] = []
+        for row in self.repository.fetch_all(query):
+            brand_hint = str(row.get("brand_hint") or "").strip()
+            if not brand_hint:
+                continue
+            if brand_hint.lower() in GENERIC_NON_ROOFTOP_BRANDS:
+                continue
+            ranked_brands.append(brand_hint)
+        return ranked_brands
 
     def _build_fallback_seed_tasks(self) -> list[DiscoverySeedTask]:
         """Fallback to the older geography-driven seeding when metro inputs are unavailable."""
@@ -768,6 +815,7 @@ class DomainDiscoveryService:
         ORDER BY country, brand_hint, state_or_province, city
         """
         rows = self.repository.fetch_all(source_query)
+        suppressed_terms = self._load_suppressed_search_terms()
         us_tasks: list[DiscoverySeedTask] = []
         canada_tasks: list[DiscoverySeedTask] = []
         seen: set[str] = set()
@@ -775,6 +823,8 @@ class DomainDiscoveryService:
         for row in rows:
             brand = str(row.get("brand_hint") or "").strip()
             if not brand:
+                continue
+            if brand.lower() in GENERIC_NON_ROOFTOP_BRANDS:
                 continue
             seed_context_name = self._build_seed_context_name(
                 str(row.get("seed_context_name") or "").strip() or None,
@@ -791,7 +841,7 @@ class DomainDiscoveryService:
             for expansion in expansions:
                 search_term = " ".join([brand, expansion, *location_parts]).strip()
                 dedupe_key = self._normalize_key(search_term)
-                if not search_term or dedupe_key in seen:
+                if not search_term or dedupe_key in seen or dedupe_key in suppressed_terms:
                     continue
                 seen.add(dedupe_key)
                 bucket = canada_tasks if country == "Canada" else us_tasks
@@ -808,6 +858,66 @@ class DomainDiscoveryService:
                     )
                 )
         return self._weighted_rotate_seed_tasks(us_tasks, canada_tasks)
+
+    def _load_suppressed_search_terms(self) -> set[str]:
+        """Return low-yield search terms that should cool down instead of reseeding immediately."""
+
+        query = f"""
+        SELECT search_term
+        FROM `{self.settings.discovered_domain_candidates_table_fqn}`
+        WHERE discovered_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {DISCOVERY_LOW_YIELD_LOOKBACK_DAYS} DAY)
+        GROUP BY search_term
+        HAVING (
+          COUNTIF(promotion_status = 'duplicate_existing') >= {DISCOVERY_LOW_YIELD_DUPLICATE_THRESHOLD}
+          AND COUNTIF(promotion_status = 'promoted_to_main_pipeline') = 0
+        ) OR (
+          COUNTIF(promotion_status = 'duplicate_existing') >= {DISCOVERY_SATURATED_DUPLICATE_THRESHOLD}
+          AND COUNTIF(promotion_status = 'promoted_to_main_pipeline') <= 1
+        )
+        """
+        return {
+            self._normalize_key(str(row.get("search_term") or ""))
+            for row in self.repository.fetch_all(query)
+            if str(row.get("search_term") or "").strip()
+        }
+
+    def _retire_stale_seed_tasks(self) -> None:
+        """Push very old low-priority discovery rows out of the active frontier."""
+
+        query = f"""
+        UPDATE `{self.settings.domain_discovery_queue_table_fqn}`
+        SET
+          status = 'completed',
+          completed_at = CURRENT_TIMESTAMP(),
+          next_attempt_at = TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL {DISCOVERY_STALE_QUEUE_COOLDOWN_DAYS} DAY),
+          last_error = 'retired_stale_low_priority_seed',
+          updated_at = CURRENT_TIMESTAMP()
+        WHERE status IN ('pending', 'retry')
+          AND COALESCE(priority, 0) <= 100
+          AND COALESCE(attempt_count, 0) <= 1
+          AND lease_owner IS NULL
+          AND created_at < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {DISCOVERY_STALE_QUEUE_DAYS} DAY)
+          AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP())
+        """
+        self.repository.execute_statement(query)
+
+    def _retire_non_rooftop_brand_tasks(self) -> None:
+        """Retire queued discovery tasks for umbrella brands that do not map cleanly to rooftops."""
+
+        brand_list_sql = ", ".join(f"'{self._escape(brand)}'" for brand in sorted(GENERIC_NON_ROOFTOP_BRANDS))
+        query = f"""
+        UPDATE `{self.settings.domain_discovery_queue_table_fqn}`
+        SET
+          status = 'completed',
+          completed_at = CURRENT_TIMESTAMP(),
+          next_attempt_at = TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL {DISCOVERY_STALE_QUEUE_COOLDOWN_DAYS} DAY),
+          last_error = 'retired_non_rooftop_brand_seed',
+          updated_at = CURRENT_TIMESTAMP()
+        WHERE status IN ('pending', 'retry')
+          AND lease_owner IS NULL
+          AND LOWER(TRIM(COALESCE(brand_hint, ''))) IN ({brand_list_sql})
+        """
+        self.repository.execute_statement(query)
 
     def _mark_metro_targets_seeded(self, tasks: list[DiscoverySeedTask]) -> None:
         """Advance metro rotation for the metros used in this seed pass."""
