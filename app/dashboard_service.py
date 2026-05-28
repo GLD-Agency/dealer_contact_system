@@ -683,12 +683,24 @@ class DashboardService:
 
         return [
             {
-                "label": "Cloud Run Job",
+                "label": "Primary Job",
                 "value": self.settings.domain_discovery_job_name,
             },
             {
-                "label": "Scheduler",
+                "label": "Primary Scheduler",
                 "value": self.settings.domain_discovery_scheduler_name,
+            },
+            {
+                "label": "Parallel Workers",
+                "value": str(max(1, self.settings.domain_discovery_parallel_workers)),
+            },
+            {
+                "label": "Secondary Job",
+                "value": self.settings.domain_discovery_secondary_job_name if self.settings.domain_discovery_parallel_workers > 1 else "-",
+            },
+            {
+                "label": "Secondary Scheduler",
+                "value": self.settings.domain_discovery_secondary_scheduler_name if self.settings.domain_discovery_parallel_workers > 1 else "-",
             },
             {
                 "label": "Cadence",

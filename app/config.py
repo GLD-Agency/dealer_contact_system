@@ -67,12 +67,15 @@ class Settings:
     domain_discovery_query_batch_size: int
     domain_discovery_cooldown_hours: int
     domain_discovery_promotion_enabled: bool
+    domain_discovery_parallel_workers: int
     domain_discovery_schedule_hint: str
     domain_discovery_us_share_percent: int
     domain_discovery_provider_order: str
     domain_discovery_search_endpoint: str
     domain_discovery_job_name: str
     domain_discovery_scheduler_name: str
+    domain_discovery_secondary_job_name: str
+    domain_discovery_secondary_scheduler_name: str
     domain_discovery_vpc_connector: str
     domain_discovery_vpc_egress: str
     domain_discovery_egress_ip: str
@@ -388,6 +391,7 @@ def get_settings() -> Settings:
         domain_discovery_query_batch_size=int(os.getenv("DOMAIN_DISCOVERY_QUERY_BATCH_SIZE", "40")),
         domain_discovery_cooldown_hours=int(os.getenv("DOMAIN_DISCOVERY_COOLDOWN_HOURS", "4")),
         domain_discovery_promotion_enabled=os.getenv("DOMAIN_DISCOVERY_PROMOTION_ENABLED", "true").lower() == "true",
+        domain_discovery_parallel_workers=int(os.getenv("DOMAIN_DISCOVERY_PARALLEL_WORKERS", "1")),
         domain_discovery_schedule_hint=os.getenv("DOMAIN_DISCOVERY_SCHEDULE_HINT", "*/30 * * * *"),
         domain_discovery_us_share_percent=int(os.getenv("DOMAIN_DISCOVERY_US_SHARE_PERCENT", "85")),
         domain_discovery_provider_order=os.getenv(
@@ -400,6 +404,14 @@ def get_settings() -> Settings:
         ),
         domain_discovery_job_name=os.getenv("DOMAIN_DISCOVERY_JOB_NAME", "dealer-domain-discovery-worker"),
         domain_discovery_scheduler_name=os.getenv("DOMAIN_DISCOVERY_SCHEDULER_NAME", "dealer-domain-discovery-schedule"),
+        domain_discovery_secondary_job_name=os.getenv(
+            "DOMAIN_DISCOVERY_SECONDARY_JOB_NAME",
+            "dealer-domain-discovery-worker-secondary",
+        ),
+        domain_discovery_secondary_scheduler_name=os.getenv(
+            "DOMAIN_DISCOVERY_SECONDARY_SCHEDULER_NAME",
+            "dealer-domain-discovery-worker-secondary-schedule",
+        ),
         domain_discovery_vpc_connector=os.getenv("DOMAIN_DISCOVERY_VPC_CONNECTOR", "dealer-discovery-conn"),
         domain_discovery_vpc_egress=os.getenv("DOMAIN_DISCOVERY_VPC_EGRESS", "all-traffic"),
         domain_discovery_egress_ip=os.getenv("DOMAIN_DISCOVERY_EGRESS_IP", "34.45.226.9"),

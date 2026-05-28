@@ -12,10 +12,12 @@ param(
     [int]$DomainDiscoveryCooldownHours = 4,
     [int]$DomainDiscoveryUsSharePercent = 85,
     [bool]$DomainDiscoveryPromotionEnabled = $true,
+    [int]$DomainDiscoveryParallelWorkers = 1,
     [string]$DomainDiscoveryProviderOrder = "gemini_google_search,duckduckgo_html",
     [bool]$GeminiEnabled = $true,
     [string]$GeminiModel = "gemini-2.5-flash",
     [string]$GeminiApiKeySecret = "gemini-api-key:latest",
+    [bool]$SeedQueue = $true,
     [int]$TaskTimeoutSeconds = 1800
 )
 
@@ -36,6 +38,7 @@ $envVars = @(
     "DOMAIN_DISCOVERY_COOLDOWN_HOURS=$DomainDiscoveryCooldownHours",
     "DOMAIN_DISCOVERY_US_SHARE_PERCENT=$DomainDiscoveryUsSharePercent",
     "DOMAIN_DISCOVERY_PROMOTION_ENABLED=$($DomainDiscoveryPromotionEnabled.ToString().ToLower())",
+    "DOMAIN_DISCOVERY_PARALLEL_WORKERS=$DomainDiscoveryParallelWorkers",
     "DOMAIN_DISCOVERY_PROVIDER_ORDER=$DomainDiscoveryProviderOrder",
     "GEMINI_ENABLED=$($GeminiEnabled.ToString().ToLower())",
     "GEMINI_MODEL=$GeminiModel"
@@ -82,6 +85,7 @@ Write-Host "Building container image..."
 cmd /c "gcloud builds submit --tag $imageUri --project=$ProjectId"
 
 Write-Host "Deploying Cloud Run discovery job..."
+$jobArgs = if ($SeedQueue) { "run-domain-discovery-cycle,--seed" } else { "run-domain-discovery-cycle" }
 $deployArgs = @(
     "run jobs deploy $JobName",
     "--image $imageUri",
@@ -92,7 +96,7 @@ $deployArgs = @(
     "--set-secrets $secretMappings",
     "--max-retries 0",
     "--task-timeout ${TaskTimeoutSeconds}s",
-    "--args run-domain-discovery-cycle,--seed"
+    "--args $jobArgs"
 )
 if ($VpcConnector) {
     $deployArgs += "--vpc-connector $VpcConnector"
