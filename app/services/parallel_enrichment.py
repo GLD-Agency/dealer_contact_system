@@ -1027,6 +1027,18 @@ class ParallelLaneManagerService:
         """Return additional claim-time eligibility checks for one lane."""
 
         queue_table = self.queue_table_fqn(lane)
+        lane_eligibility_filter = ""
+        if lane == LANE_AI:
+            lane_eligibility_filter = f"""
+          AND account_key IN (
+            SELECT account_key
+            FROM `{self.settings.dealer_accounts_table_fqn}`
+            WHERE dealer_classification IN ('dealer', 'dealer_group')
+              AND (
+                next_ai_retrieval_at IS NULL
+                OR next_ai_retrieval_at <= CURRENT_TIMESTAMP()
+              )
+          )"""
         frontier_query = f"""
         SELECT COUNT(*) AS row_count
         FROM `{queue_table}`
@@ -1034,6 +1046,7 @@ class ParallelLaneManagerService:
           AND work_phase IN ('{PHASE_DISCOVERY_FIRST_PASS}', '{PHASE_MAIN_LIST_FIRST_PASS}')
           AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP())
           AND (lease_expires_at IS NULL OR lease_expires_at <= CURRENT_TIMESTAMP())
+          {lane_eligibility_filter}
         """
         frontier_count = int(self.repository.fetch_one(frontier_query).get("row_count", 0) or 0)
         clauses = []
@@ -1042,17 +1055,7 @@ class ParallelLaneManagerService:
                 f"work_phase IN ('{PHASE_DISCOVERY_FIRST_PASS}', '{PHASE_MAIN_LIST_FIRST_PASS}')"
             )
         if lane == LANE_AI:
-            clauses.append(
-                f"""account_key IN (
-                  SELECT account_key
-                  FROM `{self.settings.dealer_accounts_table_fqn}`
-                  WHERE dealer_classification IN ('dealer', 'dealer_group')
-                    AND (
-                      next_ai_retrieval_at IS NULL
-                      OR next_ai_retrieval_at <= CURRENT_TIMESTAMP()
-                    )
-                )"""
-            )
+            clauses.append(lane_eligibility_filter.strip())
         if not clauses:
             return ""
         return "\n          AND " + "\n          AND ".join(clauses)
@@ -1158,40 +1161,42 @@ class ParallelLaneWorkerService:
                 "detail": f"Skipped {lane} because another execution is still active.",
             }
 
-        pipeline_run_id = self.run_logger.start_run(
-            task_type=lane,
-            worker_id=worker_id,
-            requested_batch_size=batch_size,
-        )
-        claimed_account_keys = self.manager.claim_batch(lane, batch_size, worker_id)
-        account_keys = list(dict.fromkeys(claimed_account_keys))
-        logger.info(
-            "Lane worker claimed queue items",
-            extra={
-                "lane": lane,
-                "claimed_count": len(claimed_account_keys),
-                "unique_account_count": len(account_keys),
-            },
-        )
-        if not account_keys:
-            self.run_logger.finish_run(
-                pipeline_run_id=pipeline_run_id,
-                run_status="completed",
-                claimed_count=0,
-                succeeded_count=0,
-                failed_count=0,
-                run_notes="No lane queue items were available to claim.",
-            )
-            return {
-                "lane": lane,
-                "status": "completed",
-                "claimed_count": 0,
-                "succeeded_count": 0,
-                "failed_count": 0,
-                "detail": "No queue items were available to claim.",
-            }
-
+        pipeline_run_id: str | None = None
+        account_keys: list[str] = []
         try:
+            pipeline_run_id = self.run_logger.start_run(
+                task_type=lane,
+                worker_id=worker_id,
+                requested_batch_size=batch_size,
+            )
+            claimed_account_keys = self.manager.claim_batch(lane, batch_size, worker_id)
+            account_keys = list(dict.fromkeys(claimed_account_keys))
+            logger.info(
+                "Lane worker claimed queue items",
+                extra={
+                    "lane": lane,
+                    "claimed_count": len(claimed_account_keys),
+                    "unique_account_count": len(account_keys),
+                },
+            )
+            if not account_keys:
+                self.run_logger.finish_run(
+                    pipeline_run_id=pipeline_run_id,
+                    run_status="completed",
+                    claimed_count=0,
+                    succeeded_count=0,
+                    failed_count=0,
+                    run_notes="No lane queue items were available to claim.",
+                )
+                return {
+                    "lane": lane,
+                    "status": "completed",
+                    "claimed_count": 0,
+                    "succeeded_count": 0,
+                    "failed_count": 0,
+                    "detail": "No queue items were available to claim.",
+                }
+
             logger.info("Lane worker dispatch starting", extra={"lane": lane, "claimed_count": len(account_keys)})
             self._dispatch_lane(lane, account_keys)
             logger.info("Lane worker dispatch finished", extra={"lane": lane, "claimed_count": len(account_keys)})
@@ -1218,14 +1223,15 @@ class ParallelLaneWorkerService:
             error_message = str(exc)
             self.manager.mark_failed(lane, account_keys, error_message)
             self.manager.update_lane_state(lane, account_keys, "failed", None, error_message)
-            self.run_logger.finish_run(
-                pipeline_run_id=pipeline_run_id,
-                run_status="failed",
-                claimed_count=len(account_keys),
-                succeeded_count=0,
-                failed_count=len(account_keys),
-                run_notes=error_message,
-            )
+            if pipeline_run_id:
+                self.run_logger.finish_run(
+                    pipeline_run_id=pipeline_run_id,
+                    run_status="failed",
+                    claimed_count=len(account_keys),
+                    succeeded_count=0,
+                    failed_count=len(account_keys),
+                    run_notes=error_message,
+                )
             raise
         finally:
             self._record_lane_lock_status(lock_id=lock_id, status="idle", detail=f"worker:{worker_id}")
