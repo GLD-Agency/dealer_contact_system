@@ -1030,7 +1030,7 @@ class ParallelLaneManagerService:
         lane_eligibility_filter = ""
         if lane == LANE_AI:
             lane_eligibility_filter = f"""
-          AND account_key IN (
+          account_key IN (
             SELECT account_key
             FROM `{self.settings.dealer_accounts_table_fqn}`
             WHERE dealer_classification IN ('dealer', 'dealer_group')
